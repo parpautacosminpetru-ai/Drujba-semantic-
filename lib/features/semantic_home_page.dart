@@ -82,7 +82,6 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
   }
 
   Future<void> _toggleScanning() async {
-    setState(() => _sessionStarted = true);
     if (_scanner.isScanning) {
       await _scanner.stop();
       _frameAccumulator.startNewStream();
@@ -383,6 +382,27 @@ final class _ControlPanel extends StatelessWidget {
             primary: scanner.status,
             secondary: semanticStatus,
           ),
+          if (scanner.lastRecognizedText.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 10),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: const Color(0xFF151D19),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Text(
+                  'OCR brut: ${scanner.lastRecognizedText}',
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ),
+            ),
+          ],
           if (scanner.error != null) ...<Widget>[
             const SizedBox(height: 10),
             Material(
