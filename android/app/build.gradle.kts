@@ -26,6 +26,10 @@ android {
             // Keeps CI artifacts directly installable. Replace this with a private
             // release keystore before publishing to an app store.
             signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 

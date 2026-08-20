@@ -1,8 +1,6 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
@@ -94,7 +92,7 @@ final class CameraInputImageAdapter {
     final requiredSize = ySize + (ySize ~/ 2);
     final target = _nv21Buffer?.length == requiredSize
         ? _nv21Buffer!
-        : (_nv21Buffer = Uint8List(requiredSize))!;
+        : (_nv21Buffer = Uint8List(requiredSize));
 
     final yPlane = image.planes[0];
     var destination = 0;

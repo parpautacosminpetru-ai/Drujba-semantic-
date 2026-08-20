@@ -396,34 +396,37 @@ final class _ControlPanel extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 8),
-          ExpansionTile(
-            key: const Key('manual-input-section'),
-            tilePadding: EdgeInsets.zero,
-            title: const Text('Introducere manuală offline'),
-            subtitle: const Text('Folosește același motor, fără cameră'),
-            children: <Widget>[
-              TextField(
-                key: const Key('manual-input'),
-                controller: manualTextController,
-                minLines: 1,
-                maxLines: 3,
-                textInputAction: TextInputAction.done,
-                onSubmitted: (_) => onProcessManualText(),
-                decoration: const InputDecoration(
-                  hintText: 'Scrie sau lipește textul aici',
+          Material(
+            color: Colors.transparent,
+            child: ExpansionTile(
+              key: const Key('manual-input-section'),
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Introducere manuală offline'),
+              subtitle: const Text('Folosește același motor, fără cameră'),
+              children: <Widget>[
+                TextField(
+                  key: const Key('manual-input'),
+                  controller: manualTextController,
+                  minLines: 1,
+                  maxLines: 3,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => onProcessManualText(),
+                  decoration: const InputDecoration(
+                    hintText: 'Scrie sau lipește textul aici',
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  key: const Key('process-manual-input'),
-                  onPressed: onProcessManualText,
-                  icon: const Icon(Icons.account_tree_outlined),
-                  label: const Text('Procesează liniar'),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    key: const Key('process-manual-input'),
+                    onPressed: onProcessManualText,
+                    icon: const Icon(Icons.account_tree_outlined),
+                    label: const Text('Procesează liniar'),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(height: 4),
           const Text(
