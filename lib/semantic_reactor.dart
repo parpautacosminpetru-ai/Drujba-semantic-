@@ -201,11 +201,10 @@ final class SemanticReactor {
   /// Freezes the active semantic object and starts a new empty active object.
   ///
   /// A lock is a semantic boundary. Later forms cannot collapse with the
-  /// frozen tree. Locking an empty or still-atomic stream is a deterministic
-  /// no-op because the UI's Zăvor applies only to composed semantic objects.
+  /// frozen tree. Only an empty stream is a deterministic no-op.
   SemanticSnapshot lockCurrent() {
     final root = _root;
-    if (root != null && root.sourceForms.length > 1) {
+    if (root != null) {
       _locked.add(
         LockedSemanticResult(
           display: _displayFor(root.rawSense),

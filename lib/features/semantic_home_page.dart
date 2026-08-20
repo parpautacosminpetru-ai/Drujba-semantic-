@@ -4,9 +4,56 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 
+import '../cinema/cinematic_profile.dart';
+import '../cinema/cinematic_scene.dart';
 import '../core/ocr_frame_accumulator.dart';
 import '../ocr/local_ocr_scanner.dart';
 import '../semantic_reactor.dart';
+import 'cinematic_stage.dart';
+
+/// Builds a no-loss replay when [candidateLedger] only inserts new forms into
+/// [integratedLedger]. Returns `null` if any integrated form was removed,
+/// changed, or reordered.
+List<String>? buildInsertOnlyReplayForms({
+  required List<String> baseForms,
+  required List<String> integratedLedger,
+  required List<String> candidateLedger,
+}) {
+  if (!_isExactSubsequence(integratedLedger, candidateLedger)) {
+    return null;
+  }
+  return List<String>.unmodifiable(<String>[
+    ...baseForms,
+    ...candidateLedger,
+  ]);
+}
+
+bool _isExactSubsequence(List<String> previous, List<String> candidate) {
+  if (previous.length > candidate.length) {
+    return false;
+  }
+
+  var previousIndex = 0;
+  for (final form in candidate) {
+    if (previousIndex < previous.length &&
+        previous[previousIndex] == form) {
+      previousIndex += 1;
+    }
+  }
+  return previousIndex == previous.length;
+}
+
+bool _isExactPrefix(List<String> prefix, List<String> candidate) {
+  if (prefix.length > candidate.length) {
+    return false;
+  }
+  for (var index = 0; index < prefix.length; index++) {
+    if (prefix[index] != candidate[index]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 final class SemanticHomePage extends StatefulWidget {
   const SemanticHomePage({super.key});
@@ -17,14 +64,20 @@ final class SemanticHomePage extends StatefulWidget {
 
 final class _SemanticHomePageState extends State<SemanticHomePage>
     with WidgetsBindingObserver {
-  final SemanticReactor _reactor = SemanticReactor();
+  final SemanticReactor _reactor = CinematicSemanticProfile.createReactor();
+  final SemanticSceneProjector _sceneProjector = SemanticSceneProjector();
   final OcrFrameAccumulator _frameAccumulator =
       OcrFrameAccumulator(requiredMatchingFrames: 2);
   final TextEditingController _manualTextController = TextEditingController();
 
   late final LocalOcrScanner _scanner;
-  int _ocrBaseFormCount = 0;
+  List<String> _ocrBaseForms = const <String>[];
+  List<String> _integratedOcrLedger = const <String>[];
+  CinematicSceneProjection? _frozenProjection;
+  LockedSemanticResult? _frozenLock;
+  bool _cinemaPaused = false;
   bool _lockingCurrentSense = false;
+  int _sessionGeneration = 0;
   String _semanticStatus = 'Așteptare flux semantic liniar';
 
   @override
@@ -51,7 +104,10 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
 
   void _beginOcrStream() {
     _frameAccumulator.startNewStream();
-    _ocrBaseFormCount = _reactor.snapshot.sourceForms.length;
+    _ocrBaseForms = List<String>.unmodifiable(
+      _reactor.snapshot.sourceForms,
+    );
+    _integratedOcrLedger = const <String>[];
   }
 
   void _onRecognizedFrame(String text) {
@@ -64,27 +120,47 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
     }
 
     if (update.requiresReplay) {
-      final currentForms = _reactor.snapshot.sourceForms;
-      final safeBaseCount =
-          _ocrBaseFormCount.clamp(0, currentForms.length).toInt();
-      final prefix = currentForms.take(safeBaseCount);
-      _reactor.replaceActiveForms(<String>[
-        ...prefix,
-        ...update.stableWords,
-      ]);
+      final replayForms = buildInsertOnlyReplayForms(
+        baseForms: _ocrBaseForms,
+        integratedLedger: _integratedOcrLedger,
+        candidateLedger: update.stableWords,
+      );
+      if (replayForms != null) {
+        _reactor.replaceActiveForms(replayForms);
+        _integratedOcrLedger = List<String>.unmodifiable(update.stableWords);
+        setState(() {
+          _semanticStatus = _describeSynthesis(
+            'Inserție OCR reintegrată fără pierderea formelor existente',
+          );
+        });
+        return;
+      }
+
       setState(() {
-        _semanticStatus = _describeSynthesis(
-          'Flux OCR corectat și reintegrat în ordinea detectată',
-        );
+        _semanticStatus =
+            'Corecție OCR respinsă: ar elimina, modifica sau reordona '
+            'forme deja integrate';
       });
       return;
     }
 
     if (update.appendedWords.isNotEmpty) {
-      _reactor.integrateForms(update.appendedWords);
+      if (!_isExactPrefix(_integratedOcrLedger, update.stableWords)) {
+        setState(() {
+          _semanticStatus =
+              'Extensie OCR respinsă: istoricul confirmat nu este păstrat';
+        });
+        return;
+      }
+
+      final safeAppend = update.stableWords
+          .skip(_integratedOcrLedger.length)
+          .toList(growable: false);
+      _reactor.integrateForms(safeAppend);
+      _integratedOcrLedger = List<String>.unmodifiable(update.stableWords);
       setState(() {
         _semanticStatus = _describeSynthesis(
-          '${update.appendedWords.length} forme integrate semantic',
+          '${safeAppend.length} forme integrate semantic',
         );
       });
       return;
@@ -147,11 +223,16 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
   }
 
   void _resetSession() {
+    _sessionGeneration += 1;
     _reactor.reset();
     _frameAccumulator.reset();
     _scanner.clearError();
     _manualTextController.clear();
-    _ocrBaseFormCount = 0;
+    _ocrBaseForms = const <String>[];
+    _integratedOcrLedger = const <String>[];
+    _frozenProjection = null;
+    _frozenLock = null;
+    _cinemaPaused = false;
     setState(() {
       _semanticStatus = 'Așteptare flux semantic liniar';
     });
@@ -159,7 +240,7 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
 
   Future<void> _lockCurrentSense() async {
     final current = _reactor.snapshot;
-    if (current.sourceForms.length < 2 || _lockingCurrentSense) {
+    if (current.isEmpty || _lockingCurrentSense) {
       return;
     }
     if (_scanner.isStarting) {
@@ -171,15 +252,20 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
     }
     final lockedDisplay = current.display;
     final scanWasActive = _scanner.isScanning;
+    final operationGeneration = _sessionGeneration;
     _lockingCurrentSense = true;
     try {
       if (scanWasActive) {
         await _scanner.stop();
       }
-      if (!mounted) {
+      if (!mounted || operationGeneration != _sessionGeneration) {
         return;
       }
       _reactor.lockCurrent();
+      final frozenLock = _reactor.snapshot.locked.last;
+      _frozenLock = frozenLock;
+      _frozenProjection = _sceneProjector.projectLocked(frozenLock);
+      _cinemaPaused = true;
       _beginOcrStream();
       setState(() {
         _semanticStatus = scanWasActive
@@ -193,15 +279,42 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
 
   void _removeLock(int index) {
     final locked = _reactor.snapshot.locked[index];
+    final removesFrozenFrame = identical(locked, _frozenLock);
     _reactor.removeLockedAt(index);
     setState(() {
+      if (removesFrozenFrame) {
+        _frozenProjection = null;
+        _frozenLock = null;
+        _cinemaPaused = false;
+      }
       _semanticStatus = '${locked.display}: Zăvor eliminat';
+    });
+  }
+
+  void _toggleCinemaPlayback() {
+    setState(() {
+      if (_frozenProjection != null) {
+        _frozenProjection = null;
+        _frozenLock = null;
+        _cinemaPaused = false;
+        _semanticStatus = 'Proiecția semantică a fost reluată';
+        return;
+      }
+      _cinemaPaused = !_cinemaPaused;
+      _semanticStatus = _cinemaPaused
+          ? 'Proiecție semantică în pauză'
+          : 'Proiecție semantică reluată';
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final snapshot = _reactor.snapshot;
+    final activeProjection = _sceneProjector.project(snapshot);
+    final stageProjection = _frozenProjection ?? activeProjection;
+    final stageDisplay = _frozenProjection == null
+        ? snapshot.display
+        : '[${stageProjection.conceptLabel.toUpperCase()}]';
 
     return Scaffold(
       appBar: AppBar(
@@ -221,10 +334,13 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
           children: <Widget>[
             Expanded(
               flex: 4,
-              child: _MonolithPanel(
-                monolith: snapshot.display,
-                canLock: snapshot.sourceForms.length > 1,
+              child: CinematicStage(
+                projection: stageProjection,
+                display: stageDisplay,
+                canLock: _frozenProjection == null && !snapshot.isEmpty,
+                isPaused: _cinemaPaused,
                 onLock: _lockCurrentSense,
+                onTogglePlayback: _toggleCinemaPlayback,
               ),
             ),
             const Divider(height: 1),
@@ -235,8 +351,9 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
                 semanticStatus: _semanticStatus,
                 manualTextController: _manualTextController,
                 lockedSenses: snapshot.locked,
-                fusionSteps: snapshot.fusionSteps,
-                unresolvedForms: snapshot.unresolvedForms,
+                fusionSteps: _frozenProjection?.proof ?? snapshot.fusionSteps,
+                unresolvedForms: _frozenProjection?.unresolvedForms ??
+                    snapshot.unresolvedForms,
                 onToggleScanning: _toggleScanning,
                 onProcessManualText: _processManualText,
                 onRemoveLock: _removeLock,
@@ -256,66 +373,6 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
       ..dispose();
     _manualTextController.dispose();
     super.dispose();
-  }
-}
-
-final class _MonolithPanel extends StatelessWidget {
-  const _MonolithPanel({
-    required this.monolith,
-    required this.canLock,
-    required this.onLock,
-  });
-
-  final String monolith;
-  final bool canLock;
-  final Future<void> Function() onLock;
-
-  @override
-  Widget build(BuildContext context) {
-    return ColoredBox(
-      color: Colors.black,
-      child: LayoutBuilder(
-        builder: (context, constraints) => SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: constraints.maxHeight - 32),
-            child: Center(
-              child: Semantics(
-                label: 'Sens brut compozițional curent',
-                hint: canLock
-                    ? 'Atinge pentru a aplica Zăvorul și a deschide un segment nou'
-                    : null,
-                button: canLock,
-                liveRegion: true,
-                child: GestureDetector(
-                  key: const Key('lock-current-sense'),
-                  onTap: canLock ? () => unawaited(onLock()) : null,
-                  behavior: HitTestBehavior.opaque,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 20,
-                    ),
-                    child: Text(
-                      monolith,
-                      key: const Key('semantic-monolith'),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Color(0xFF69F0AE),
-                        fontFamily: 'monospace',
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }
 
@@ -391,6 +448,40 @@ final class _ControlPanel extends StatelessWidget {
             active: scanner.isScanning,
             primary: scanner.status,
             secondary: semanticStatus,
+          ),
+          const SizedBox(height: 8),
+          Material(
+            color: Colors.transparent,
+            child: ExpansionTile(
+              key: const Key('manual-input-section'),
+              maintainState: true,
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Introducere manuală offline'),
+              subtitle: const Text('Folosește același reactor, fără cameră'),
+              children: <Widget>[
+                TextField(
+                  key: const Key('manual-input'),
+                  controller: manualTextController,
+                  minLines: 1,
+                  maxLines: 3,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => onProcessManualText(),
+                  decoration: const InputDecoration(
+                    hintText: 'Scrie sau lipește formele aici',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    key: const Key('process-manual-input'),
+                    onPressed: onProcessManualText,
+                    icon: const Icon(Icons.account_tree_outlined),
+                    label: const Text('Integrează sensul brut'),
+                  ),
+                ),
+              ],
+            ),
           ),
           if (fusionSteps.isNotEmpty) ...<Widget>[
             const SizedBox(height: 10),
@@ -487,42 +578,9 @@ final class _ControlPanel extends StatelessWidget {
               ],
             ),
           ],
-          const SizedBox(height: 8),
-          Material(
-            color: Colors.transparent,
-            child: ExpansionTile(
-              key: const Key('manual-input-section'),
-              tilePadding: EdgeInsets.zero,
-              title: const Text('Introducere manuală offline'),
-              subtitle: const Text('Folosește același reactor, fără cameră'),
-              children: <Widget>[
-                TextField(
-                  key: const Key('manual-input'),
-                  controller: manualTextController,
-                  minLines: 1,
-                  maxLines: 3,
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => onProcessManualText(),
-                  decoration: const InputDecoration(
-                    hintText: 'Scrie sau lipește formele aici',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    key: const Key('process-manual-input'),
-                    onPressed: onProcessManualText,
-                    icon: const Icon(Icons.account_tree_outlined),
-                    label: const Text('Integrează sensul brut'),
-                  ),
-                ),
-              ],
-            ),
-          ),
           const SizedBox(height: 4),
           const Text(
-            'Atinge un monolit compus pentru Zăvor [LOCK]. Scanarea se '
+            'Atinge cuvântul-concept pentru Zăvor [LOCK]. Scanarea se '
             'oprește, sensul rămâne separat, iar următoarea pornire deschide '
             'o sinteză nouă.',
             textAlign: TextAlign.center,

@@ -40,11 +40,18 @@ final class OcrFrameUpdate {
 /// Stabilizes overlapping OCR windows and emits every word occurrence once.
 ///
 /// Camera OCR may return a cumulative prefix, a sliding window, or a corrected
-/// view. This class waits for compatible consecutive observations, aligns the
-/// stable window in one global ledger, and preserves already confirmed prefix
-/// and suffix positions. A deliberately repeated word at a new position is
-/// preserved. Mapped edits request a replay so order-sensitive consumers
-/// cannot silently append a word in the wrong position.
+/// view. This class waits for consecutive observations with identical token
+/// surfaces, aligns the stable window in one global ledger, and preserves
+/// already confirmed prefix and suffix positions. A deliberately repeated
+/// word at a new position is preserved. Mapped edits request a replay so
+/// order-sensitive consumers cannot silently append a word in the wrong
+/// position.
+///
+/// Without OCR coordinates, an isolated word identical to an already
+/// confirmed occurrence cannot be distinguished from the camera revisiting
+/// that occurrence. The accumulator deliberately deduplicates that ambiguous
+/// one-word frame. Repetition remains observable when the frame itself carries
+/// positional evidence, for example `da da`.
 final class OcrFrameAccumulator {
   OcrFrameAccumulator({this.requiredMatchingFrames = 2}) {
     if (requiredMatchingFrames < 1) {
@@ -80,10 +87,8 @@ final class OcrFrameAccumulator {
       return _update(isStable: false);
     }
 
-    if (_similarEnough(words, _candidateWords)) {
+    if (_sameSurfaceWords(words, _candidateWords)) {
       _candidateMatches += 1;
-      // Keep the newest surface form so a stabilized OCR correction is not
-      // hidden by normalized comparison.
       _candidateWords = words;
     } else {
       _candidateWords = words;
@@ -138,172 +143,117 @@ final class OcrFrameAccumulator {
     return trimmed.split(RegExp(r'\s+'));
   }
 
-  static bool _similarEnough(List<String> left, List<String> right) {
-    if (left.isEmpty || right.isEmpty) {
+  static bool _sameSurfaceWords(List<String> left, List<String> right) {
+    if (left.length != right.length) {
       return false;
     }
-
-    final lengthDifference = left.length - right.length;
-    if (lengthDifference.abs() > 1) {
-      return false;
-    }
-
-    if (lengthDifference == 0) {
-      var fluctuations = 0;
-      for (var index = 0; index < left.length; index++) {
-        if (_wordKey(left[index]) != _wordKey(right[index])) {
-          fluctuations += 1;
-          if (fluctuations > 1) {
-            return false;
-          }
-        }
-      }
-      return true;
-    }
-
-    final longer = left.length > right.length ? left : right;
-    final shorter = left.length > right.length ? right : left;
-    var longerIndex = 0;
-    var shorterIndex = 0;
-    var fluctuations = 0;
-    while (longerIndex < longer.length && shorterIndex < shorter.length) {
-      if (_wordKey(longer[longerIndex]) == _wordKey(shorter[shorterIndex])) {
-        longerIndex += 1;
-        shorterIndex += 1;
-        continue;
-      }
-      fluctuations += 1;
-      if (fluctuations > 1) {
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) {
         return false;
       }
-      longerIndex += 1;
     }
     return true;
   }
 
   OcrFrameUpdate _reconcileStableFrame(List<String> words) {
-    if (_lastStableFrameWords.isEmpty) {
+    final previousLedger = List<String>.of(_committedWords);
+    if (previousLedger.isEmpty) {
+      _committedWords.addAll(words);
+      _rememberStableFrame(words, 0);
+      return _update(isStable: true, appendedWords: words);
+    }
+
+    final preferredStart = _lastStableFrameWords.isEmpty
+        ? 0
+        : _lastStableFrameStart;
+    final alignment = _bestGreedyAlignment(
+      previousLedger,
+      words,
+      preferredStart: preferredStart,
+    );
+    final hasAnchor = alignment.any((position) => position >= 0);
+
+    if (!hasAnchor) {
       final frameStart = _committedWords.length;
       _committedWords.addAll(words);
       _rememberStableFrame(words, frameStart);
       return _update(isStable: true, appendedWords: words);
     }
 
-    final existingFrameStart = _findNormalizedSubsequence(
-      _committedWords,
-      words,
-      preferredStart: _lastStableFrameStart,
+    final mergedLedger = <String>[];
+    final mergedFramePositions = List<int>.filled(words.length, -1);
+    final insertedWords = <String>[];
+    var insertedInsideLedger = false;
+    var ledgerCursor = 0;
+    var frameCursor = 0;
+
+    for (var frameIndex = 0; frameIndex < words.length; frameIndex++) {
+      final ledgerIndex = alignment[frameIndex];
+      if (ledgerIndex < 0) {
+        continue;
+      }
+
+      mergedLedger.addAll(
+        previousLedger.getRange(ledgerCursor, ledgerIndex),
+      );
+      while (frameCursor < frameIndex) {
+        mergedFramePositions[frameCursor] = mergedLedger.length;
+        mergedLedger.add(words[frameCursor]);
+        insertedWords.add(words[frameCursor]);
+        insertedInsideLedger = true;
+        frameCursor += 1;
+      }
+
+      mergedFramePositions[frameIndex] = mergedLedger.length;
+      // A normalized OCR match retains its first confirmed surface spelling.
+      mergedLedger.add(previousLedger[ledgerIndex]);
+      ledgerCursor = ledgerIndex + 1;
+      frameCursor = frameIndex + 1;
+    }
+
+    final hasConfirmedSuffix = ledgerCursor < previousLedger.length;
+    while (frameCursor < words.length) {
+      mergedFramePositions[frameCursor] = mergedLedger.length;
+      mergedLedger.add(words[frameCursor]);
+      insertedWords.add(words[frameCursor]);
+      insertedInsideLedger = insertedInsideLedger || hasConfirmedSuffix;
+      frameCursor += 1;
+    }
+    mergedLedger.addAll(
+      previousLedger.getRange(ledgerCursor, previousLedger.length),
     );
-    if (existingFrameStart >= 0) {
-      final surfacesChanged = !_sameSurfaceSlices(
-        _committedWords,
-        existingFrameStart,
-        words,
-        0,
-        words.length,
-      );
-      if (surfacesChanged) {
-        _replaceMappedSegment(
-          existingFrameStart,
-          previousLength: words.length,
-          replacement: words,
-        );
-        _rememberStableFrame(words, existingFrameStart);
-        return _update(isStable: true, requiresReplay: true);
-      }
 
-      _rememberStableFrame(words, existingFrameStart);
-      return _update(isStable: true);
-    }
-
-    if (_isNormalizedPrefix(_lastStableFrameWords, words)) {
-      final surfacesChanged = !_sameSurfacePrefix(
-        _lastStableFrameWords,
-        words,
-        _lastStableFrameWords.length,
-      );
-      if (surfacesChanged) {
-        _replaceMappedSegment(
-          _lastStableFrameStart,
-          previousLength: _lastStableFrameWords.length,
-          replacement: words,
-        );
-        _rememberStableFrame(words, _lastStableFrameStart);
-        return _update(isStable: true, requiresReplay: true);
-      }
-
-      final appendedWords = words.sublist(_lastStableFrameWords.length);
-      final mappedEnd =
-          _lastStableFrameStart + _lastStableFrameWords.length;
-      if (appendedWords.isNotEmpty && mappedEnd < _committedWords.length) {
-        _replaceMappedSegment(
-          _lastStableFrameStart,
-          previousLength: _lastStableFrameWords.length,
-          replacement: words,
-        );
-        _rememberStableFrame(words, _lastStableFrameStart);
-        return _update(isStable: true, requiresReplay: true);
-      }
-      _committedWords.addAll(appendedWords);
-      _rememberStableFrame(words, _lastStableFrameStart);
-      return _update(isStable: true, appendedWords: appendedWords);
-    }
-
-    final overlap = _longestNormalizedSuffixPrefix(
-      _lastStableFrameWords,
-      words,
+    _insertOnlyMergedWords(previousLedger, mergedLedger);
+    final frameStart = mergedFramePositions.firstWhere(
+      (position) => position >= 0,
+      orElse: () => previousLedger.length,
     );
-    if (overlap > 0) {
-      final frameStart = _lastStableFrameStart +
-          _lastStableFrameWords.length -
-          overlap;
-      final overlapSurfaceChanged = !_sameSurfaceSlices(
-        _lastStableFrameWords,
-        _lastStableFrameWords.length - overlap,
-        words,
-        0,
-        overlap,
-      );
-      if (overlapSurfaceChanged) {
-        _replaceMappedSegment(
-          frameStart,
-          previousLength: overlap,
-          replacement: words,
-        );
-        _rememberStableFrame(words, frameStart);
-        return _update(isStable: true, requiresReplay: true);
-      }
+    _rememberStableFrame(words, frameStart);
 
-      final appendedWords = words.sublist(overlap);
-      final overlapEnd = frameStart + overlap;
-      if (appendedWords.isNotEmpty && overlapEnd < _committedWords.length) {
-        _replaceMappedSegment(
-          frameStart,
-          previousLength: overlap,
-          replacement: words,
-        );
-        _rememberStableFrame(words, frameStart);
-        return _update(isStable: true, requiresReplay: true);
-      }
-      _committedWords.addAll(appendedWords);
-      _rememberStableFrame(words, frameStart);
-      return _update(isStable: true, appendedWords: appendedWords);
-    }
-
-    if (_looksLikeMappedSegmentEdit(_lastStableFrameWords, words)) {
-      _replaceMappedSegment(
-        _lastStableFrameStart,
-        previousLength: _lastStableFrameWords.length,
-        replacement: words,
-      );
-      _rememberStableFrame(words, _lastStableFrameStart);
+    if (insertedInsideLedger) {
       return _update(isStable: true, requiresReplay: true);
     }
+    return _update(isStable: true, appendedWords: insertedWords);
+  }
 
-    final frameStart = _committedWords.length;
-    _committedWords.addAll(words);
-    _rememberStableFrame(words, frameStart);
-    return _update(isStable: true, appendedWords: words);
+  void _insertOnlyMergedWords(
+    List<String> previousLedger,
+    List<String> mergedLedger,
+  ) {
+    var previousIndex = 0;
+    var mergedIndex = 0;
+    while (mergedIndex < mergedLedger.length) {
+      if (previousIndex < previousLedger.length &&
+          mergedLedger[mergedIndex] == previousLedger[previousIndex]) {
+        previousIndex += 1;
+        mergedIndex += 1;
+        continue;
+      }
+
+      _committedWords.insert(mergedIndex, mergedLedger[mergedIndex]);
+      mergedIndex += 1;
+    }
+    assert(previousIndex == previousLedger.length);
   }
 
   void _rememberStableFrame(List<String> words, int frameStart) {
@@ -315,150 +265,39 @@ final class OcrFrameAccumulator {
     _candidateMatches = 0;
   }
 
-  void _replaceMappedSegment(
-    int start, {
-    required int previousLength,
-    required List<String> replacement,
-  }) {
-    final mappedLength = previousLength > replacement.length
-        ? previousLength
-        : replacement.length;
-    final proposedEnd = start + mappedLength;
-    final end = proposedEnd < _committedWords.length
-        ? proposedEnd
-        : _committedWords.length;
-    _committedWords.replaceRange(start, end, replacement);
-  }
-
-  static bool _isNormalizedPrefix(
-    List<String> prefix,
-    List<String> words,
-  ) {
-    if (prefix.length > words.length) {
-      return false;
-    }
-    for (var index = 0; index < prefix.length; index++) {
-      if (_wordKey(prefix[index]) != _wordKey(words[index])) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  static int _longestNormalizedSuffixPrefix(
-    List<String> previous,
-    List<String> current,
-  ) {
-    final maximum = previous.length < current.length
-        ? previous.length
-        : current.length;
-    for (var length = maximum; length > 0; length--) {
-      final previousStart = previous.length - length;
-      var matches = true;
-      for (var offset = 0; offset < length; offset++) {
-        if (_wordKey(previous[previousStart + offset]) !=
-            _wordKey(current[offset])) {
-          matches = false;
-          break;
-        }
-      }
-      if (matches) {
-        return length;
-      }
-    }
-    return 0;
-  }
-
-  static int _findNormalizedSubsequence(
+  static List<int> _bestGreedyAlignment(
     List<String> ledger,
     List<String> frame, {
     required int preferredStart,
   }) {
-    if (frame.isEmpty || frame.length > ledger.length) {
-      return -1;
-    }
+    final clampedStart = preferredStart.clamp(0, ledger.length).toInt();
+    final preferred = _greedyAlignmentFrom(ledger, frame, clampedStart);
+    final global = _greedyAlignmentFrom(ledger, frame, 0);
+    final preferredMatches =
+        preferred.where((position) => position >= 0).length;
+    final globalMatches = global.where((position) => position >= 0).length;
+    return preferredMatches >= globalMatches ? preferred : global;
+  }
 
-    var bestStart = -1;
-    var bestDistance = ledger.length + 1;
-    final lastStart = ledger.length - frame.length;
-    for (var start = 0; start <= lastStart; start++) {
-      var normalizedMatch = true;
-      for (var offset = 0; offset < frame.length; offset++) {
-        if (_wordKey(ledger[start + offset]) != _wordKey(frame[offset])) {
-          normalizedMatch = false;
+  static List<int> _greedyAlignmentFrom(
+    List<String> ledger,
+    List<String> frame,
+    int start,
+  ) {
+    final positions = List<int>.filled(frame.length, -1);
+    var ledgerCursor = start;
+    for (var frameIndex = 0; frameIndex < frame.length; frameIndex++) {
+      for (var ledgerIndex = ledgerCursor;
+          ledgerIndex < ledger.length;
+          ledgerIndex++) {
+        if (_wordKey(ledger[ledgerIndex]) == _wordKey(frame[frameIndex])) {
+          positions[frameIndex] = ledgerIndex;
+          ledgerCursor = ledgerIndex + 1;
           break;
         }
       }
-      if (!normalizedMatch) {
-        continue;
-      }
-
-      final distance = (start - preferredStart).abs();
-      if (distance < bestDistance) {
-        bestStart = start;
-        bestDistance = distance;
-      }
     }
-
-    return bestStart;
-  }
-
-  static bool _looksLikeMappedSegmentEdit(
-    List<String> previous,
-    List<String> current,
-  ) {
-    return _commonNormalizedPrefixLength(previous, current) > 0 ||
-        _commonNormalizedSuffixLength(previous, current) > 0;
-  }
-
-  static int _commonNormalizedPrefixLength(
-    List<String> left,
-    List<String> right,
-  ) {
-    final maximum = left.length < right.length ? left.length : right.length;
-    var length = 0;
-    while (length < maximum &&
-        _wordKey(left[length]) == _wordKey(right[length])) {
-      length += 1;
-    }
-    return length;
-  }
-
-  static int _commonNormalizedSuffixLength(
-    List<String> left,
-    List<String> right,
-  ) {
-    final maximum = left.length < right.length ? left.length : right.length;
-    var length = 0;
-    while (length < maximum &&
-        _wordKey(left[left.length - 1 - length]) ==
-            _wordKey(right[right.length - 1 - length])) {
-      length += 1;
-    }
-    return length;
-  }
-
-  static bool _sameSurfacePrefix(
-    List<String> left,
-    List<String> right,
-    int length,
-  ) {
-    return _sameSurfaceSlices(left, 0, right, 0, length);
-  }
-
-  static bool _sameSurfaceSlices(
-    List<String> left,
-    int leftStart,
-    List<String> right,
-    int rightStart,
-    int length,
-  ) {
-    for (var offset = 0; offset < length; offset++) {
-      if (left[leftStart + offset] != right[rightStart + offset]) {
-        return false;
-      }
-    }
-    return true;
+    return positions;
   }
 
   static String _wordKey(String word) {

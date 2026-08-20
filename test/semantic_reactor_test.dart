@@ -129,6 +129,70 @@ void main() {
       );
     });
 
+    test('each integration preserves the complete preceding prefix', () {
+      final reactor = SemanticReactor();
+      final forms = <String>['Sistem', 'Politic', 'și', 'Sistem', 'Sistem'];
+      final history = <SemanticSnapshot>[];
+
+      for (var index = 0; index < forms.length; index += 1) {
+        reactor.integrateForm(forms[index]);
+        history.add(reactor.snapshot);
+        expect(
+          reactor.snapshot.sourceForms,
+          forms.take(index + 1).toList(growable: false),
+          reason: 'S(${index + 1}) must retain the complete input prefix',
+        );
+      }
+
+      expect(history.first.sourceForms, <String>['Sistem']);
+      expect(
+        history[1].sourceForms,
+        <String>['Sistem', 'Politic'],
+      );
+      expect(history.last.sourceForms, forms);
+    });
+
+    test('an unresolved suffix cannot erase a resolved prefix or connector', () {
+      final reactor = SemanticReactor()
+        ..integrateForms(<String>['Sistem', 'Politic', 'și', 'Sistem']);
+
+      expect(reactor.snapshot.rawSense, 'Guvernanță-și-Sistem');
+      expect(
+        reactor.snapshot.sourceForms,
+        <String>['Sistem', 'Politic', 'și', 'Sistem'],
+      );
+      expect(reactor.snapshot.fusionSteps, hasLength(1));
+      expect(reactor.snapshot.fusionSteps.single.axiomId, 'AX-002');
+      expect(
+        reactor.snapshot.fusionSteps.single.sourceForms,
+        <String>['Sistem', 'Politic'],
+      );
+      expect(
+        reactor.snapshot.unresolvedForms,
+        <String>['și', 'Sistem'],
+      );
+      expect(reactor.snapshot.isAxiomaticallyResolved, isFalse);
+    });
+
+    test('duplicate operands may fuse without provenance deduplication', () {
+      final reactor = SemanticReactor(
+        axioms: const <SemanticAxiom>[
+          SemanticAxiom('DUP-001', 'ecou', 'ecou', 'Rezonanță'),
+        ],
+      )..integrateForms(<String>['Ecou', 'Ecou']);
+
+      expect(reactor.snapshot.rawSense, 'Rezonanță');
+      expect(reactor.snapshot.sourceForms, <String>['Ecou', 'Ecou']);
+      expect(reactor.snapshot.fusionSteps, hasLength(1));
+      expect(reactor.snapshot.fusionSteps.single.axiomId, 'DUP-001');
+      expect(
+        reactor.snapshot.fusionSteps.single.sourceForms,
+        <String>['Ecou', 'Ecou'],
+      );
+      expect(reactor.snapshot.isAxiomaticallyResolved, isTrue);
+      expect(reactor.snapshot.unresolvedForms, isEmpty);
+    });
+
     test('canonicalizes Unicode and explicit matrix OCR aliases for lookup', () {
       const decomposedGovernance = 'GUVERNANT\u0326A\u0306';
       final reactor = SemanticReactor()
@@ -380,20 +444,16 @@ void main() {
       expect(locked.fusionSteps, hasLength(1));
     });
 
-    test('locking requires a composition and a lock can be removed', () {
+    test('locking accepts an atomic concept and a lock can be removed', () {
       final reactor = SemanticReactor()..lockCurrent();
       expect(reactor.snapshot.locked, isEmpty);
 
       reactor
         ..integrateForm('Concept')
         ..lockCurrent();
-      expect(reactor.snapshot.locked, isEmpty);
-      expect(reactor.snapshot.rawSense, 'Concept');
-
-      reactor
-        ..integrateForm('compus')
-        ..lockCurrent();
       expect(reactor.snapshot.locked, hasLength(1));
+      expect(reactor.snapshot.locked.single.rawSense, 'Concept');
+      expect(reactor.snapshot.rawSense, isEmpty);
 
       reactor.removeLockedAt(0);
       expect(reactor.snapshot.locked, isEmpty);
