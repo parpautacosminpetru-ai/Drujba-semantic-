@@ -19,7 +19,11 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
     with WidgetsBindingObserver {
   final PureSemanticFuzer _fuzer = PureSemanticFuzer();
   final RomanianRuleTagger _tagger = const RomanianRuleTagger();
-  final OcrFrameAccumulator _frameAccumulator = OcrFrameAccumulator();
+  // Live OCR frames fluctuate slightly even when the page stays still. Emit
+  // every recognized frame immediately; the accumulator still suppresses
+  // occurrences already committed in the current stream.
+  final OcrFrameAccumulator _frameAccumulator =
+      OcrFrameAccumulator(requiredMatchingFrames: 1);
   final TextEditingController _manualTextController = TextEditingController();
 
   late final LocalOcrScanner _scanner;
