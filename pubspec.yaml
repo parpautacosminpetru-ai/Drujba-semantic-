@@ -1,7 +1,7 @@
-name: semantic_drujba
-description: Aplicație Android offline pentru fuziune sintactico-lexicală liniară.
+name: drujba_semantic_core
+description: Reactor semantic compozițional offline, liniar și determinist.
 publish_to: none
-version: 1.0.0+1
+version: 2.0.0+2
 
 environment:
   sdk: ^3.12.0

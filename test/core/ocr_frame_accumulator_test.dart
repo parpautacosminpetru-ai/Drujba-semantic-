@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:semantic_drujba/core/ocr_frame_accumulator.dart';
+import 'package:drujba_semantic_core/core/ocr_frame_accumulator.dart';
 
 void main() {
   group('OcrFrameAccumulator', () {
@@ -18,8 +18,12 @@ void main() {
 
       expect(first.isStable, isFalse);
       expect(first.newWords, isEmpty);
+      expect(first.appendedWords, isEmpty);
+      expect(first.requiresReplay, isFalse);
       expect(second.isStable, isTrue);
       expect(second.newWords, <String>['Ana', 'are']);
+      expect(second.appendedWords, <String>['Ana', 'are']);
+      expect(second.requiresReplay, isFalse);
       expect(second.stableText, 'Ana are');
     });
 
@@ -29,10 +33,14 @@ void main() {
       accumulator
         ..ingestFrame('Ana are mere')
         ..ingestFrame('Ana are mere');
+      final firstDuplicateObservation = accumulator.ingestFrame('Ana are mere');
       final duplicate = accumulator.ingestFrame('Ana are mere');
 
+      expect(firstDuplicateObservation.isStable, isFalse);
       expect(duplicate.isStable, isTrue);
       expect(duplicate.newWords, isEmpty);
+      expect(duplicate.appendedWords, isEmpty);
+      expect(duplicate.requiresReplay, isFalse);
       expect(accumulator.stableText, 'Ana are mere');
     });
 
@@ -46,7 +54,59 @@ void main() {
 
       final extension = accumulator.absoarbeCadru('Ana are mere');
       expect(extension.cuvinteNoi, <String>['mere']);
+      expect(extension.appendedWords, <String>['mere']);
+      expect(extension.requiresReplay, isFalse);
       expect(extension.cuvinteStabile, <String>['Ana', 'are', 'mere']);
+    });
+
+    test('keeps a global ledger across overlapping sliding frames', () {
+      final accumulator = OcrFrameAccumulator();
+
+      accumulator
+        ..ingestFrame('A B C')
+        ..ingestFrame('A B C');
+      final firstSlideObservation = accumulator.ingestFrame('C D E');
+      final slide = accumulator.ingestFrame('C D E');
+
+      expect(firstSlideObservation.isStable, isFalse);
+      expect(slide.isStable, isTrue);
+      expect(slide.requiresReplay, isFalse);
+      expect(slide.appendedWords, <String>['D', 'E']);
+      expect(slide.stableWords, <String>['A', 'B', 'C', 'D', 'E']);
+      expect(accumulator.stableText, 'A B C D E');
+    });
+
+    test('appends a disjoint stable frame to the global ledger', () {
+      final accumulator = OcrFrameAccumulator();
+
+      accumulator
+        ..ingestFrame('A B')
+        ..ingestFrame('A B')
+        ..ingestFrame('X Y');
+      final disjoint = accumulator.ingestFrame('X Y');
+
+      expect(disjoint.isStable, isTrue);
+      expect(disjoint.requiresReplay, isFalse);
+      expect(disjoint.appendedWords, <String>['X', 'Y']);
+      expect(disjoint.stableWords, <String>['A', 'B', 'X', 'Y']);
+    });
+
+    test('remaps revisited ledger segments without duplicates or loss', () {
+      final accumulator = OcrFrameAccumulator(requiredMatchingFrames: 1);
+
+      accumulator.ingestFrame('A B C D E');
+      final revisit = accumulator.ingestFrame('B C');
+      final extensionInsideLedger = accumulator.ingestFrame('B C D');
+
+      expect(revisit.requiresReplay, isFalse);
+      expect(revisit.appendedWords, isEmpty);
+      expect(revisit.stableWords, <String>['A', 'B', 'C', 'D', 'E']);
+      expect(extensionInsideLedger.requiresReplay, isFalse);
+      expect(extensionInsideLedger.appendedWords, isEmpty);
+      expect(
+        extensionInsideLedger.stableWords,
+        <String>['A', 'B', 'C', 'D', 'E'],
+      );
     });
 
     test('preserves a repeated word at a new position', () {
@@ -57,23 +117,98 @@ void main() {
       expect(accumulator.stableWords, <String>['da', 'da']);
     });
 
-    test('emits an inserted occurrence without duplicating known words', () {
+    test('requests replay when an occurrence is inserted before the cursor', () {
       final accumulator = OcrFrameAccumulator(requiredMatchingFrames: 1);
 
       accumulator.ingestFrame('Ana mere');
       final insertion = accumulator.ingestFrame('Ana are mere');
 
-      expect(insertion.newWords, <String>['are']);
-      expect(accumulator.stableWords, <String>['Ana', 'mere', 'are']);
+      expect(insertion.isStable, isTrue);
+      expect(insertion.requiresReplay, isTrue);
+      expect(insertion.appendedWords, isEmpty);
+      expect(insertion.newWords, isEmpty);
+      expect(insertion.stableWords, <String>['Ana', 'are', 'mere']);
+      expect(accumulator.stableWords, <String>['Ana', 'are', 'mere']);
     });
 
-    test('case and configured punctuation do not duplicate an occurrence', () {
+    test('requests replay for a correction or removal in the mapped segment', () {
+      final accumulator = OcrFrameAccumulator(requiredMatchingFrames: 1);
+
+      accumulator.ingestFrame('Ana are mere');
+
+      final correction = accumulator.ingestFrame('Ana vede mere');
+      expect(correction.requiresReplay, isTrue);
+      expect(correction.appendedWords, isEmpty);
+      expect(correction.stableWords, <String>['Ana', 'vede', 'mere']);
+
+      final removal = accumulator.ingestFrame('Ana mere');
+      expect(removal.requiresReplay, isTrue);
+      expect(removal.appendedWords, isEmpty);
+      expect(removal.stableWords, <String>['Ana', 'mere']);
+    });
+
+    test('mapped correction preserves ledger words before a sliding window', () {
+      final accumulator = OcrFrameAccumulator(requiredMatchingFrames: 1);
+
+      accumulator
+        ..ingestFrame('A B C')
+        ..ingestFrame('C D E');
+      final correction = accumulator.ingestFrame('C X E');
+
+      expect(correction.requiresReplay, isTrue);
+      expect(correction.appendedWords, isEmpty);
+      expect(correction.stableWords, <String>['A', 'B', 'C', 'X', 'E']);
+    });
+
+    test('mapped edit preserves the confirmed ledger suffix', () {
+      final accumulator = OcrFrameAccumulator(requiredMatchingFrames: 1);
+
+      accumulator
+        ..ingestFrame('A B C D E')
+        ..ingestFrame('B C');
+      final correction = accumulator.ingestFrame('B X');
+
+      expect(correction.requiresReplay, isTrue);
+      expect(correction.appendedWords, isEmpty);
+      expect(correction.stableWords, <String>['A', 'B', 'X', 'D', 'E']);
+    });
+
+    test('an extension inside the ledger updates its mapped interval', () {
+      final accumulator = OcrFrameAccumulator(requiredMatchingFrames: 1);
+
+      accumulator
+        ..ingestFrame('A B C D E')
+        ..ingestFrame('B C');
+      final correction = accumulator.ingestFrame('B C X');
+
+      expect(correction.requiresReplay, isTrue);
+      expect(correction.appendedWords, isEmpty);
+      expect(correction.stableWords, <String>['A', 'B', 'C', 'X', 'E']);
+    });
+
+    test('surface or punctuation changes require replay', () {
       final accumulator = OcrFrameAccumulator(requiredMatchingFrames: 1);
 
       accumulator.ingestFrame('CONCEPT');
       final sameOccurrence = accumulator.ingestFrame('(concept),');
 
       expect(sameOccurrence.newWords, isEmpty);
+      expect(sameOccurrence.requiresReplay, isTrue);
+      expect(sameOccurrence.stableWords, <String>['(concept),']);
+    });
+
+    test('tolerates one OCR fluctuation but never emits the first observation', () {
+      final accumulator = OcrFrameAccumulator();
+
+      final first = accumulator.ingestFrame('Ana are mere');
+      final stabilized = accumulator.ingestFrame('Ana are pere');
+
+      expect(first.isStable, isFalse);
+      expect(first.appendedWords, isEmpty);
+      expect(stabilized.isStable, isTrue);
+      expect(stabilized.requiresReplay, isFalse);
+      expect(stabilized.appendedWords, <String>['Ana', 'are', 'pere']);
+      expect(stabilized.stableWords, <String>['Ana', 'are', 'pere']);
     });
 
     test('blank frames interrupt matching but do not erase committed words', () {
