@@ -59,7 +59,7 @@ Cerințe: Flutter 3.47.0, Dart 3.12+, JDK 17 și Android SDK 36.
 ```bash
 flutter pub get
 flutter analyze
-fluttter test
+flutter test
 flutter build apk --release
 ```
 
