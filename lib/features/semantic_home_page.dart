@@ -349,7 +349,7 @@ final class _ControlPanel extends StatelessWidget {
     return ColoredBox(
       color: const Color(0xFF0D1210),
       child: ListView(
-        scrollCacheExtent: 1600,
+        scrollCacheExtent: const ScrollCacheExtent.pixels(1600),
         padding: const EdgeInsets.all(16),
         children: <Widget>[
           if (showPreview) ...<Widget>[
