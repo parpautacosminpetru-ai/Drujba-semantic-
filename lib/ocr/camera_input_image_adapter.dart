@@ -33,16 +33,16 @@ final class CameraInputImageAdapter {
       return null;
     }
 
-    final sourceFormat = InputImageFormatValue.fromRawValue(image.format.raw);
-    if (sourceFormat == null) {
-      return null;
-    }
-
     late final Uint8List bytes;
     late final InputImageFormat format;
     late final int bytesPerRow;
 
     if (image.planes.length == 1) {
+      final sourceFormat =
+          InputImageFormatValue.fromRawValue(image.format.raw);
+      if (sourceFormat == null) {
+        return null;
+      }
       bytes = image.planes.first.bytes;
       format = sourceFormat == InputImageFormat.bgra8888
           ? InputImageFormat.bgra8888
