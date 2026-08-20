@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:drujba_semantic_core/cinema/cinematic_scene.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -36,4 +38,3 @@ void main() {
     }
   });
 }
-import 'dart:ui' as ui;
