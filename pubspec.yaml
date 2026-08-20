@@ -1,7 +1,7 @@
 name: semantic_drujba
-description: Aplicație Android offline pentru fuziune sintactico-lexicală liniară.
+description: Aplicație Android offline pentru sinteză semantică integrativă liniară NO-LOSS.
 publish_to: none
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ^3.12.0

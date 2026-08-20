@@ -1,39 +1,39 @@
 import 'dart:collection';
 
-/// Result of one OCR frame observation.
+/// One stabilized OCR observation.
 final class OcrFrameUpdate {
   OcrFrameUpdate({
     required this.isStable,
-    required List<String> newWords,
-    required List<String> stableWords,
-  })  : newWords = List<String>.unmodifiable(newWords),
-        stableWords = List<String>.unmodifiable(stableWords);
+    required List<String> stableTokens,
+    required List<String> changedTokens,
+    required this.changedFromIndex,
+  })  : stableTokens = List<String>.unmodifiable(stableTokens),
+        changedTokens = List<String>.unmodifiable(changedTokens);
 
-  /// Whether the current non-empty frame reached the configured stability.
   final bool isStable;
+  final List<String> stableTokens;
 
-  /// Stable word occurrences not returned by an earlier frame in this stream.
-  final List<String> newWords;
+  /// Suffix beginning at [changedFromIndex] after positional reconciliation.
+  final List<String> changedTokens;
 
-  /// All word occurrences already committed for the current stream.
-  final List<String> stableWords;
+  /// Zero-based position at which the stable OCR stream diverged. -1 means
+  /// that no committed semantic position changed in this update.
+  final int changedFromIndex;
 
-  bool get hasNewWords => newWords.isNotEmpty;
-  String get newText => newWords.join(' ');
-  String get stableText => stableWords.join(' ');
+  bool get hasChanges => changedFromIndex >= 0;
 
-  // Romanian aliases used by the application layer.
-  List<String> get cuvinteNoi => newWords;
-  List<String> get cuvinteStabile => stableWords;
+  // Compatibility aliases.
+  List<String> get newWords => changedTokens;
+  List<String> get stableWords => stableTokens;
+  String get newText => changedTokens.join(' ');
+  String get stableText => stableTokens.join(' ');
+  List<String> get cuvinteNoi => changedTokens;
+  List<String> get cuvinteStabile => stableTokens;
 }
 
-/// Stabilizes cumulative OCR frames and emits every word occurrence only once.
-///
-/// Camera OCR commonly returns the whole recognized prefix on every frame.
-/// This class waits for matching consecutive frames, then reconciles the
-/// stable frame with occurrences already emitted. A deliberately repeated word
-/// at a new position is preserved, insertions are not lost, and reordered or
-/// repeated frames do not duplicate the semantic stream.
+/// Stabilizes full OCR frames while preserving exact token order and
+/// punctuation. Corrections are reported positionally so the semantic engine
+/// can roll back to S_(k-1) and replay the corrected suffix.
 final class OcrFrameAccumulator {
   OcrFrameAccumulator({this.requiredMatchingFrames = 2}) {
     if (requiredMatchingFrames < 1) {
@@ -47,32 +47,28 @@ final class OcrFrameAccumulator {
 
   final int requiredMatchingFrames;
 
-  List<String> _candidateWords = const <String>[];
+  List<String> _candidateTokens = const <String>[];
   int _candidateMatches = 0;
-  final List<String> _committedWords = <String>[];
+  final List<String> _stableTokens = <String>[];
 
-  static final RegExp _discardedPunctuation =
-      RegExp(r'[.,\/#!$%\^&\*;:{}=\-_`~()]');
+  UnmodifiableListView<String> get stableTokens =>
+      UnmodifiableListView<String>(_stableTokens);
+  UnmodifiableListView<String> get stableWords => stableTokens;
+  String get stableText => _stableTokens.join(' ');
 
-  UnmodifiableListView<String> get stableWords =>
-      UnmodifiableListView<String>(_committedWords);
-  String get stableText => _committedWords.join(' ');
-
-  /// Observes one full OCR frame and returns only newly stable words.
   OcrFrameUpdate ingestFrame(String recognizedText) {
-    final words = _tokenize(recognizedText);
-    if (words.isEmpty) {
-      _candidateWords = const <String>[];
+    final tokens = tokenizeText(recognizedText);
+    if (tokens.isEmpty) {
+      _candidateTokens = const <String>[];
       _candidateMatches = 0;
       return _update(isStable: false);
     }
 
-    if (_sameWords(words, _candidateWords)) {
+    if (_sameTokens(tokens, _candidateTokens)) {
       _candidateMatches += 1;
-      // Keep the newest spelling/casing even when comparison rules evolve.
-      _candidateWords = words;
+      _candidateTokens = tokens;
     } else {
-      _candidateWords = words;
+      _candidateTokens = tokens;
       _candidateMatches = 1;
     }
 
@@ -80,81 +76,85 @@ final class OcrFrameAccumulator {
       return _update(isStable: false);
     }
 
-    final newWords = _uncommittedOccurrences(words);
-    _committedWords.addAll(newWords);
-    return _update(isStable: true, newWords: newWords);
+    final common = _commonPrefixLength(_stableTokens, tokens);
+    if (common == _stableTokens.length && common == tokens.length) {
+      return _update(isStable: true);
+    }
+
+    _stableTokens
+      ..clear()
+      ..addAll(tokens);
+
+    return _update(
+      isStable: true,
+      changedFromIndex: common,
+      changedTokens: tokens.sublist(common),
+    );
   }
 
-  /// Romanian alias for [ingestFrame].
-  OcrFrameUpdate absoarbeCadru(String textRecunoscut) {
-    return ingestFrame(textRecunoscut);
-  }
+  OcrFrameUpdate absoarbeCadru(String textRecunoscut) =>
+      ingestFrame(textRecunoscut);
 
-  /// Starts a distinct OCR stream. Previously emitted positions may be emitted
-  /// again only after this explicit boundary.
   void startNewStream() => reset();
-
-  /// Romanian alias for [startNewStream].
   void incepeFluxNou() => startNewStream();
 
   void reset() {
-    _candidateWords = const <String>[];
+    _candidateTokens = const <String>[];
     _candidateMatches = 0;
-    _committedWords.clear();
+    _stableTokens.clear();
   }
 
   OcrFrameUpdate _update({
     required bool isStable,
-    List<String> newWords = const <String>[],
+    int changedFromIndex = -1,
+    List<String> changedTokens = const <String>[],
   }) {
     return OcrFrameUpdate(
       isStable: isStable,
-      newWords: newWords,
-      stableWords: _committedWords,
+      stableTokens: _stableTokens,
+      changedTokens: changedTokens,
+      changedFromIndex: changedFromIndex,
     );
   }
 
-  static List<String> _tokenize(String text) {
+  /// Tokenization is lossless at word/punctuation level. Punctuation is kept as
+  /// its own C_n contribution instead of being stripped from a neighboring word.
+  static List<String> tokenizeText(String text) {
     final trimmed = text.trim();
     if (trimmed.isEmpty) {
       return const <String>[];
     }
-    return trimmed.split(RegExp(r'\s+'));
+
+    final matcher = RegExp(
+      r'''[A-Za-zĂÂÎȘȚŢŢăâîșțşţ0-9]+(?:['’][A-Za-zĂÂÎȘȚŞŢăâîșțşţ0-9]+)*|[.,;:!?…()\[\]{}„”"«»—–-]''',
+      unicode: true,
+    );
+    return matcher
+        .allMatches(trimmed)
+        .map((match) => match.group(0)!)
+        .toList(growable: false);
   }
 
-  static bool _sameWords(List<String> left, List<String> right) {
+  static bool _sameTokens(List<String> left, List<String> right) {
     if (left.length != right.length) {
       return false;
     }
     for (var index = 0; index < left.length; index++) {
-      if (_wordKey(left[index]) != _wordKey(right[index])) {
+      if (_tokenKey(left[index]) != _tokenKey(right[index])) {
         return false;
       }
     }
     return true;
   }
 
-  List<String> _uncommittedOccurrences(List<String> words) {
-    final availableOccurrences = <String, int>{};
-    for (final word in _committedWords) {
-      final key = _wordKey(word);
-      availableOccurrences[key] = (availableOccurrences[key] ?? 0) + 1;
+  static int _commonPrefixLength(List<String> left, List<String> right) {
+    final limit = left.length < right.length ? left.length : right.length;
+    var index = 0;
+    while (index < limit && _tokenKey(left[index]) == _tokenKey(right[index])) {
+      index += 1;
     }
-
-    final uncommitted = <String>[];
-    for (final word in words) {
-      final key = _wordKey(word);
-      final available = availableOccurrences[key] ?? 0;
-      if (available > 0) {
-        availableOccurrences[key] = available - 1;
-      } else {
-        uncommitted.add(word);
-      }
-    }
-    return uncommitted;
+    return index;
   }
 
-  static String _wordKey(String word) {
-    return word.replaceAll(_discardedPunctuation, '').toLowerCase();
-  }
+  static String _tokenKey(String token) => token.trim().toLowerCase();
 }

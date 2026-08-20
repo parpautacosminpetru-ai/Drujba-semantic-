@@ -1,108 +1,67 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:semantic_drujba/core/ocr_frame_accumulator.dart';
 import 'package:semantic_drujba/core/pure_semantic_fuzer.dart';
+import 'package:semantic_drujba/core/romanian_rule_tagger.dart';
 
 void main() {
-  group('PureSemanticFuzer', () {
-    test('starts with the exact empty-flow monolith', () {
-      final fuzer = PureSemanticFuzer();
+  const tagger = RomanianRuleTagger();
 
-      expect(fuzer.generateMonolith(), '[Flux-Vid]');
-      expect(fuzer.genereazaMonolit(), '[Flux-Vid]');
-    });
+  test('function words are semantic operators, never stop words', () {
+    final fuzer = PureSemanticFuzer();
+    fuzer.absorbTokens(
+      OcrFrameAccumulator.tokenizeText('în istoria sa multiseculară'),
+      tagger,
+    );
 
-    test('preserves category insertion order and exact separators', () {
-      final fuzer = PureSemanticFuzer()
-        ..absorbWord('Epistemologia', 'SUBSTANTIV')
-        ..absorbWord('determina', 'VERB')
-        ..absorbWord('evolutia', 'SUBSTANTIV')
-        ..absorbWord('ȘTIINȚIFIC', 'ADJECTIV')
-        ..absorbWord('rapid', 'ADVERB');
+    final snapshot = fuzer.snapshot;
+    expect(snapshot.tokenCount, 4);
+    expect(snapshot.contributions.map((e) => e.surface),
+        <String>['în', 'istoria', 'sa', 'multiseculară']);
+    expect(snapshot.rawMeaning, contains('interioritate/localizare'));
+    expect(snapshot.rawMeaning, contains('istoria'));
+    expect(snapshot.rawMeaning, contains('posesie-p3-singular'));
+    expect(snapshot.rawMeaning, contains('multiseculară'));
+  });
 
-      expect(
-        fuzer.generateMonolith(),
-        '[Epistemologia-Evolutia] ➔ [Determina] [științific][rapid]',
-      );
-      expect(
-        fuzer.snapshot.substances.map((element) => element.value),
-        <String>['Epistemologia', 'Evolutia'],
-      );
-      expect(
-        fuzer.snapshot.dynamics.map((element) => element.value),
-        <String>['Determina'],
-      );
-      expect(
-        fuzer.snapshot.attributes.map((element) => element.value),
-        <String>['științific', 'rapid'],
-      );
-    });
+  test('negation and punctuation participate in the same state', () {
+    final fuzer = PureSemanticFuzer();
+    fuzer.absorbTokens(
+      OcrFrameAccumulator.tokenizeText('nu pleacă.'),
+      tagger,
+    );
 
-    test('removes specified punctuation and ignores stop words', () {
-      final fuzer = PureSemanticFuzer()
-        ..absorbWord('ȘI,', 'SUBSTANTIV')
-        ..absorbWord('(în)', 'SUBSTANTIV')
-        ..absorbWord('eco-socială!', 'SUBSTANTIV');
+    expect(fuzer.snapshot.tokenCount, 3);
+    expect(fuzer.snapshot.rawMeaning, contains('negație'));
+    expect(fuzer.snapshot.rawMeaning, contains('pleacă'));
+    expect(fuzer.snapshot.rawMeaning, contains('închidere-enunț'));
+  });
 
-      expect(fuzer.generateMonolith(), '[Ecosocială]');
-      expect(fuzer.frequencies, <String, int>{'Ecosocială': 1});
-    });
+  test('rollback and replay replace OCR correction without semantic residue', () {
+    final fuzer = PureSemanticFuzer();
+    fuzer.reconcileTail(
+      baseIndex: 0,
+      tokens: OcrFrameAccumulator.tokenizeText('în istoria lui'),
+      tagger: tagger,
+    );
+    expect(fuzer.snapshot.rawMeaning, contains('lui'));
 
-    test('duplicates update frequency without changing insertion order', () {
-      final fuzer = PureSemanticFuzer()
-        ..absorbWord('Casa', 'SUBSTANTIV')
-        ..absorbWord('Casa', 'SUBSTANTIV')
-        ..absorbWord('Om', 'SUBSTANTIV');
+    fuzer.reconcileTail(
+      baseIndex: 0,
+      tokens: OcrFrameAccumulator.tokenizeText('în istoria sa'),
+      tagger: tagger,
+    );
 
-      expect(fuzer.generateMonolith(), '[Casa-Om]');
-      expect(fuzer.frequencyOf('casa'), 2);
-      expect(fuzer.snapshot.substances.first.frequency, 2);
-    });
+    expect(fuzer.tokens, <String>['în', 'istoria', 'sa']);
+    expect(fuzer.snapshot.rawMeaning, isNot(contains('lui')));
+    expect(fuzer.snapshot.rawMeaning, contains('posesie-p3-singular'));
+  });
 
-    test('lock counts observations but prevents category insertion', () {
-      final fuzer = PureSemanticFuzer()..lock('idee');
-
-      fuzer.absorbWord('idee', 'SUBSTANTIV');
-      expect(fuzer.generateMonolith(), '[Flux-Vid]');
-      expect(fuzer.frequencyOf('Idee'), 1);
-
-      fuzer.unlock('IDEE');
-      expect(fuzer.isLocked('Idee'), isFalse);
-      fuzer.absoarbeCuvantLiniar('idee', 'SUBSTANTIV');
-
-      expect(fuzer.generateMonolith(), '[Idee]');
-      expect(fuzer.frequencyOf('Idee'), 2);
-    });
-
-    test('attribute locks work with their lowercase display values', () {
-      final fuzer = PureSemanticFuzer()
-        ..absorbWord('CULTURAL', 'ADJECTIV');
-
-      expect(fuzer.toggleLock('cultural'), isTrue);
-      expect(fuzer.snapshot.attributes.single.locked, isTrue);
-      fuzer.absorbWord('cultural', 'ADJECTIV');
-      expect(fuzer.snapshot.attributes.single.frequency, 2);
-
-      expect(fuzer.comutaZavor('cultural'), isFalse);
-      expect(fuzer.snapshot.attributes.single.locked, isFalse);
-    });
-
-    test('unknown tags default to nouns and adverbs are attributes', () {
-      final fuzer = PureSemanticFuzer()
-        ..absorbWord('necunoscut', 'ALTCEVA')
-        ..absorbWord('repede', 'ADVERB');
-
-      expect(fuzer.generateMonolith(), '[Necunoscut] [repede]');
-    });
-
-    test('reset clears categories, frequencies, and locks', () {
-      final fuzer = PureSemanticFuzer()
-        ..absorbWord('Concept', 'SUBSTANTIV')
-        ..aplicaZavor('Concept')
-        ..reset();
-
-      expect(fuzer.generateMonolith(), '[Flux-Vid]');
-      expect(fuzer.frequencies, isEmpty);
-      expect(fuzer.isLocked('Concept'), isFalse);
-      expect(fuzer.stareCurenta.substante, isEmpty);
-    });
+  test('ambiguous function form stays explicitly ambiguous', () {
+    final fuzer = PureSemanticFuzer();
+    fuzer.absorbToken('o', tagger);
+    expect(
+      fuzer.snapshot.rawMeaning,
+      contains('articol/pronume/auxiliar'),
+    );
   });
 }

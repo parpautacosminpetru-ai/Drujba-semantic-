@@ -1,249 +1,475 @@
 import 'dart:collection';
 
-/// A semantic item prepared for display by the user interface.
-final class SemanticElement {
-  const SemanticElement({
-    required this.value,
-    required this.frequency,
-    required this.locked,
+import 'romanian_rule_tagger.dart';
+
+/// One explicit contribution C_n entering the unique evolving semantic state.
+final class SemanticContribution {
+  const SemanticContribution({
+    required this.index,
+    required this.surface,
+    required this.category,
+    required this.explicitMeaning,
   });
 
-  /// The exact display value used in the generated monolith.
-  final String value;
-
-  /// Number of non-stop-word observations, including observations while locked.
-  final int frequency;
-
-  /// Whether future observations of this concept are currently ignored.
-  final bool locked;
+  final int index;
+  final String surface;
+  final String category;
+  final String explicitMeaning;
 }
 
-/// An immutable, insertion-ordered view of the fuzer's current state.
+/// Immutable view of the single semantic object S_n.
 final class SemanticSnapshot {
   SemanticSnapshot({
-    required List<SemanticElement> substances,
-    required List<SemanticElement> dynamics,
-    required List<SemanticElement> attributes,
-    required this.monolith,
-  })  : substances = List<SemanticElement>.unmodifiable(substances),
-        dynamics = List<SemanticElement>.unmodifiable(dynamics),
-        attributes = List<SemanticElement>.unmodifiable(attributes);
+    required List<SemanticContribution> contributions,
+    required this.rawMeaning,
+    required this.formalState,
+  }) : contributions = List<SemanticContribution>.unmodifiable(contributions);
 
-  final List<SemanticElement> substances;
-  final List<SemanticElement> dynamics;
-  final List<SemanticElement> attributes;
-  final String monolith;
+  final List<SemanticContribution> contributions;
 
-  // Romanian aliases keep the public API traceable to the specification.
-  List<SemanticElement> get substante => substances;
-  List<SemanticElement> get dinamici => dynamics;
-  List<SemanticElement> get atribute => attributes;
+  /// The explicit, integrated meaning. It is not a summary.
+  final String rawMeaning;
+
+  /// Mathematical state label for the current linear transition.
+  final String formalState;
+
+  int get tokenCount => contributions.length;
+  bool get isEmpty => contributions.isEmpty;
+
+  // Compatibility alias used by the previous UI.
+  String get monolith => rawMeaning;
 }
 
-/// Deterministic, offline semantic fusion engine from the project specification.
+/// Linear no-loss semantic synthesizer.
 ///
-/// Words are kept in insertion order and are never predictively completed or
-/// paraphrased. Duplicate words increase their frequency without changing the
-/// order of the generated monolith.
+/// Invariant:
+///   S_0 = ∅
+///   S_n = F(S_(n-1), C_n)
+///
+/// Every token occurrence, including function words and punctuation, produces
+/// exactly one [SemanticContribution]. The engine never removes stop words,
+/// deduplicates concepts, predicts missing text, or imports external context.
+/// Ambiguous closed-class forms retain slash-separated alternatives.
 final class PureSemanticFuzer {
-  final LinkedHashSet<String> _substances = LinkedHashSet<String>();
-  final LinkedHashSet<String> _dynamics = LinkedHashSet<String>();
-  final LinkedHashSet<String> _attributes = LinkedHashSet<String>();
-  final LinkedHashSet<String> _lockedConcepts = LinkedHashSet<String>();
-  final LinkedHashMap<String, int> _frequencies = LinkedHashMap<String, int>();
+  final List<String> _tokens = <String>[];
+  final List<SemanticContribution> _contributions = <SemanticContribution>[];
+  final List<_MeaningNode?> _states = <_MeaningNode?>[];
 
-  static final RegExp _discardedPunctuation =
-      RegExp(r'[.,\/#!$%\^&\*;:{}=\-_`~()]');
+  _MeaningNode? _current;
 
-  /// Function words excluded verbatim by the supplied specification.
-  static const Set<String> stopWords = <String>{
-    'și',
-    'sau',
-    'dar',
-    'iar',
-    'încât',
-    'ca',
-    'să',
-    'o',
-    'un',
-    'unui',
-    'unei',
-    'pe',
-    'la',
-    'în',
-    'din',
-    'cu',
-    'de',
-    'prin',
-    'pentru',
-    'este',
-    'sunt',
-    'a',
-    'al',
-    'ai',
-    'ale',
-    'ce',
-    'care',
-    'ci',
-    'ba',
-    'deci',
-    'prin urmare',
-    'asupra',
-    'sub',
-    'peste',
-  };
+  int get tokenCount => _tokens.length;
+  UnmodifiableListView<String> get tokens => UnmodifiableListView(_tokens);
 
-  /// Absorbs one word into exactly one grammatical category.
-  ///
-  /// The frequency is updated before the lock is checked, matching the PDF
-  /// algorithm. Unknown tags deliberately fall back to `SUBSTANTIV`.
-  void absorbWord(String word, String grammaticalTag) {
-    final cleaned = _clean(word);
-    final normalized = cleaned.toLowerCase();
-    if (normalized.isEmpty || stopWords.contains(normalized)) {
+  /// Integrates one already-analyzed token into the same evolving object.
+  void absorbAnalysis(RomanianTokenAnalysis analysis) {
+    if (analysis.surface.isEmpty) {
       return;
     }
 
-    final concept = _conceptKey(cleaned);
-    _frequencies[concept] = (_frequencies[concept] ?? 0) + 1;
-    if (_lockedConcepts.contains(_lockKey(concept))) {
-      return;
-    }
+    final contribution = SemanticContribution(
+      index: _tokens.length + 1,
+      surface: analysis.surface,
+      category: analysis.category,
+      explicitMeaning: analysis.explicitMeaning,
+    );
 
-    switch (grammaticalTag.toUpperCase()) {
-      case 'SUBSTANTIV':
-        _substances.add(concept);
-      case 'VERB':
-        _dynamics.add(concept);
-      case 'ADJECTIV':
-      case 'ADVERB':
-        _attributes.add(normalized);
-      default:
-        _substances.add(concept);
+    _tokens.add(analysis.surface);
+    _contributions.add(contribution);
+    _current = _integrate(_current, analysis);
+    _states.add(_current);
+  }
+
+  void absorbToken(String token, RomanianRuleTagger tagger) {
+    absorbAnalysis(tagger.analyzeToken(token));
+  }
+
+  void absorbTokens(Iterable<String> tokens, RomanianRuleTagger tagger) {
+    for (final token in tokens) {
+      absorbToken(token, tagger);
     }
   }
 
-  /// Romanian alias from the supplied implementation contract.
+  /// Compatibility API from v1.0. The supplied tag is intentionally ignored:
+  /// the conservative token analyzer owns grammatical/operator decisions.
+  void absorbWord(String word, String grammaticalTag) {
+    absorbToken(word, const RomanianRuleTagger());
+  }
+
   void absoarbeCuvantLiniar(String cuvant, String tagGramatical) {
     absorbWord(cuvant, tagGramatical);
   }
 
-  /// Locks a concept so later observations only update its frequency.
-  void lock(String value) {
-    final key = _lockKey(value);
-    if (key.isNotEmpty) {
-      _lockedConcepts.add(key);
-    }
-  }
-
-  /// Romanian alias from the supplied implementation contract.
-  void aplicaZavor(String element) => lock(element);
-
-  /// Unlocks a concept and allows later observations to enter a category.
-  void unlock(String value) {
-    final key = _lockKey(value);
-    if (key.isNotEmpty) {
-      _lockedConcepts.remove(key);
-    }
-  }
-
-  /// Romanian alias from the supplied implementation contract.
-  void eliminaZavor(String element) => unlock(element);
-
-  /// Toggles a concept lock and returns its new state.
-  bool toggleLock(String value) {
-    final key = _lockKey(value);
-    if (key.isEmpty) {
-      return false;
-    }
-    if (_lockedConcepts.remove(key)) {
-      return false;
-    }
-    _lockedConcepts.add(key);
-    return true;
-  }
-
-  /// Romanian alias for [toggleLock].
-  bool comutaZavor(String element) => toggleLock(element);
-
-  bool isLocked(String value) {
-    final key = _lockKey(value);
-    return key.isNotEmpty && _lockedConcepts.contains(key);
-  }
-
-  int frequencyOf(String value) {
-    final key = _lockKey(value);
-    if (key.isEmpty) {
-      return 0;
-    }
-    return _frequencies.entries
-        .where((entry) => _lockKey(entry.key) == key)
-        .fold<int>(0, (total, entry) => total + entry.value);
-  }
-
-  /// Frequencies in the order in which concepts were first observed.
-  Map<String, int> get frequencies =>
-      UnmodifiableMapView<String, int>(_frequencies);
-
-  /// Generates the monolith using the exact separators from the PDF.
-  String generateMonolith() {
-    if (_substances.isEmpty && _dynamics.isEmpty && _attributes.isEmpty) {
-      return '[Flux-Vid]';
+  /// Reconciles an OCR segment against the exact token positions already
+  /// integrated from [baseIndex] onward. If OCR corrects an earlier token, the
+  /// state rolls back to S_(k-1), then replays linearly from the correction.
+  void reconcileTail({
+    required int baseIndex,
+    required List<String> tokens,
+    required RomanianRuleTagger tagger,
+  }) {
+    if (baseIndex < 0 || baseIndex > _tokens.length) {
+      throw RangeError.range(baseIndex, 0, _tokens.length, 'baseIndex');
     }
 
-    final substance = _substances.join('-');
-    final dynamic = _dynamics.isEmpty ? '' : ' ➔ [${_dynamics.join('-')}]';
-    final attributes = _attributes.isEmpty
-        ? ''
-        : ' ${_attributes.map((attribute) => '[$attribute]').join()}';
-    return '[$substance]$dynamic$attributes';
+    final oldTail = _tokens.sublist(baseIndex);
+    var common = 0;
+    final limit = oldTail.length < tokens.length ? oldTail.length : tokens.length;
+    while (common < limit &&
+        _tokenKey(oldTail[common]) == _tokenKey(tokens[common])) {
+      common += 1;
+    }
+
+    final rollbackIndex = baseIndex + common;
+    rollbackTo(rollbackIndex);
+    absorbTokens(tokens.skip(common), tagger);
   }
 
-  /// Romanian alias from the supplied implementation contract.
+  /// Rolls the unique semantic state back to exactly S_[tokenCount].
+  void rollbackTo(int tokenCount) {
+    if (tokenCount < 0 || tokenCount > _tokens.length) {
+      throw RangeError.range(tokenCount, 0, _tokens.length, 'tokenCount');
+    }
+    if (tokenCount == _tokens.length) {
+      return;
+    }
+
+    _tokens.removeRange(tokenCount, _tokens.length);
+    _contributions.removeRange(tokenCount, _contributions.length);
+    _states.removeRange(tokenCount, _states.length);
+    _current = tokenCount == 0 ? null : _states[tokenCount - 1];
+  }
+
+  String generateMonolith() => snapshot.rawMeaning;
   String genereazaMonolit() => generateMonolith();
 
-  SemanticSnapshot get snapshot => SemanticSnapshot(
-        substances: _elementsFor(_substances),
-        dynamics: _elementsFor(_dynamics),
-        attributes: _elementsFor(_attributes),
-        monolith: generateMonolith(),
-      );
+  SemanticSnapshot get snapshot {
+    final n = _tokens.length;
+    final raw = _current?.render() ?? '∅';
+    final formal = n == 0
+        ? 'S₀ = ∅'
+        : 'S$n = F(S${n - 1}, C$n)  •  Sₙ = F(...F(S₀,C₁)...,Cₙ)';
+    return SemanticSnapshot(
+      contributions: _contributions,
+      rawMeaning: raw,
+      formalState: formal,
+    );
+  }
 
-  /// Romanian alias for [snapshot].
   SemanticSnapshot get stareCurenta => snapshot;
 
-  /// Clears categories, frequencies, and locks for a completely new session.
   void reset() {
-    _substances.clear();
-    _dynamics.clear();
-    _attributes.clear();
-    _lockedConcepts.clear();
-    _frequencies.clear();
+    _tokens.clear();
+    _contributions.clear();
+    _states.clear();
+    _current = null;
   }
 
-  List<SemanticElement> _elementsFor(Iterable<String> values) {
-    return values
-        .map(
-          (value) => SemanticElement(
-            value: value,
-            frequency: frequencyOf(value),
-            locked: isLocked(value),
-          ),
-        )
-        .toList(growable: false);
-  }
-
-  static String _clean(String value) {
-    return value.replaceAll(_discardedPunctuation, '').trim();
-  }
-
-  static String _conceptKey(String cleanedValue) {
-    if (cleanedValue.isEmpty) {
-      return '';
+  _MeaningNode _integrate(
+    _MeaningNode? state,
+    RomanianTokenAnalysis analysis,
+  ) {
+    if (analysis.isPunctuation) {
+      final punctuation = _PunctuationNode(
+        symbol: analysis.surface,
+        meaning: analysis.explicitMeaning,
+      );
+      return state == null ? punctuation : _FusionNode(state, punctuation);
     }
-    return '${cleanedValue.substring(0, 1).toUpperCase()}'
-        '${cleanedValue.substring(1)}';
+
+    if (analysis.modifiesPrevious && state != null && !_hasOpenRightEdge(state)) {
+      return _modifyRightEdge(
+        state,
+        _ModifierNode(
+          surface: analysis.surface,
+          meaning: analysis.explicitMeaning,
+        ),
+      );
+    }
+
+    final unit = _nodeFor(analysis);
+    if (state == null) {
+      return unit;
+    }
+
+    // A connector arriving after a complete state uses that whole state as
+    // its explicit left argument. If an earlier operator is still open, the
+    // connector first becomes that operator's current operand.
+    if (analysis.category == RomanianRuleTagger.conjunctionTag) {
+      final nested = _fillOpenRightEdge(state, unit);
+      if (nested.didFill) {
+        return nested.node;
+      }
+      return _OpenConnectorNode(analysis.explicitMeaning, state);
+    }
+
+    final fill = _fillOpenRightEdge(state, unit);
+    if (fill.didFill) {
+      return fill.node;
+    }
+    return _FusionNode(state, unit);
   }
 
-  static String _lockKey(String value) => _clean(value).toLowerCase();
+  static _MeaningNode _nodeFor(RomanianTokenAnalysis analysis) {
+    switch (analysis.category) {
+      case RomanianRuleTagger.prepositionTag:
+        return _OpenRelationNode(analysis.explicitMeaning);
+      case RomanianRuleTagger.conjunctionTag:
+        return _OpenConnectorNode(analysis.explicitMeaning);
+      case RomanianRuleTagger.negationTag:
+        return _OpenUnaryNode(analysis.explicitMeaning);
+      case RomanianRuleTagger.determinerTag:
+        return _OpenUnaryNode(analysis.explicitMeaning);
+      case RomanianRuleTagger.quantifierTag:
+        return _OpenUnaryNode(analysis.explicitMeaning);
+      case RomanianRuleTagger.auxiliaryTag:
+        return _SemanticAtom(
+          surface: analysis.surface,
+          meaning: analysis.explicitMeaning,
+        );
+      case RomanianRuleTagger.copulaTag:
+        return _SemanticAtom(
+          surface: analysis.surface,
+          meaning: analysis.explicitMeaning,
+        );
+      case RomanianRuleTagger.pronounTag:
+      case RomanianRuleTagger.ambiguousTag:
+      case RomanianRuleTagger.possessiveTag:
+      case RomanianRuleTagger.numeralTag:
+      case RomanianRuleTagger.lexemeTag:
+      default:
+        return _SemanticAtom(
+          surface: analysis.surface,
+          meaning: analysis.explicitMeaning,
+        );
+    }
+  }
+
+  static bool _hasOpenRightEdge(_MeaningNode node) {
+    if (node is _OpenRelationNode ||
+        node is _OpenUnaryNode ||
+        node is _OpenConnectorNode) {
+      return true;
+    }
+    if (node is _FusionNode) {
+      return _hasOpenRightEdge(node.right);
+    }
+    if (node is _RelationNode) {
+      return _hasOpenRightEdge(node.object);
+    }
+    if (node is _UnaryNode) {
+      return _hasOpenRightEdge(node.operand);
+    }
+    if (node is _ConnectorNode) {
+      return _hasOpenRightEdge(node.right);
+    }
+    if (node is _ModifiedNode) {
+      return _hasOpenRightEdge(node.base);
+    }
+    return false;
+  }
+
+  static _FillResult _fillOpenRightEdge(_MeaningNode node, _MeaningNode unit) {
+    if (node is _OpenRelationNode) {
+      return _FillResult(_RelationNode(node.operator, unit), true);
+    }
+    if (node is _OpenUnaryNode) {
+      return _FillResult(_UnaryNode(node.operator, unit), true);
+    }
+    if (node is _OpenConnectorNode) {
+      return _FillResult(_ConnectorNode(node.operator, node.left, unit), true);
+    }
+    if (node is _FusionNode) {
+      final result = _fillOpenRightEdge(node.right, unit);
+      return result.didFill
+          ? _FillResult(_FusionNode(node.left, result.node), true)
+          : _FillResult(node, false);
+    }
+    if (node is _RelationNode) {
+      final result = _fillOpenRightEdge(node.object, unit);
+      return result.didFill
+          ? _FillResult(_RelationNode(node.operator, result.node), true)
+          : _FillResult(node, false);
+    }
+    if (node is _UnaryNode) {
+      final result = _fillOpenRightEdge(node.operand, unit);
+      return result.didFill
+          ? _FillResult(_UnaryNode(node.operator, result.node), true)
+          : _FillResult(node, false);
+    }
+    if (node is _ConnectorNode) {
+      final result = _fillOpenRightEdge(node.right, unit);
+      return result.didFill
+          ? _FillResult(
+              _ConnectorNode(node.operator, node.left, result.node),
+              true,
+            )
+          : _FillResult(node, false);
+    }
+    if (node is _ModifiedNode) {
+      final result = _fillOpenRightEdge(node.base, unit);
+      return result.didFill
+          ? _FillResult(_ModifiedNode(result.node, node.modifiers), true)
+          : _FillResult(node, false);
+    }
+    return _FillResult(node, false);
+  }
+
+  static _MeaningNode _modifyRightEdge(
+    _MeaningNode node,
+    _ModifierNode modifier,
+  ) {
+    if (node is _FusionNode) {
+      if (node.right is _PunctuationNode) {
+        return _FusionNode(node, modifier);
+      }
+      return _FusionNode(node.left, _modifyRightEdge(node.right, modifier));
+    }
+    if (node is _RelationNode) {
+      return _RelationNode(
+        node.operator,
+        _modifyRightEdge(node.object, modifier),
+      );
+    }
+    if (node is _UnaryNode) {
+      return _UnaryNode(node.operator, _modifyRightEdge(node.operand, modifier));
+    }
+    if (node is _ConnectorNode) {
+      return _ConnectorNode(
+        node.operator,
+        node.left,
+        _modifyRightEdge(node.right, modifier),
+      );
+    }
+    if (node is _ModifiedNode) {
+      return _ModifiedNode(node.base, <_ModifierNode>[...node.modifiers, modifier]);
+    }
+    if (node is _PunctuationNode) {
+      return _FusionNode(node, modifier);
+    }
+    return _ModifiedNode(node, <_ModifierNode>[modifier]);
+  }
+
+  static String _tokenKey(String token) => token.trim().toLowerCase();
+}
+
+sealed class _MeaningNode {
+  const _MeaningNode();
+  String render();
+}
+
+final class _SemanticAtom extends _MeaningNode {
+  const _SemanticAtom({required this.surface, required this.meaning});
+  final String surface;
+  final String meaning;
+
+  @override
+  String render() {
+    if (surface.toLowerCase() == meaning.toLowerCase()) {
+      return surface;
+    }
+    return '$meaning⟨$surface⟩';
+  }
+}
+
+final class _ModifierNode extends _MeaningNode {
+  const _ModifierNode({required this.surface, required this.meaning});
+  final String surface;
+  final String meaning;
+
+  @override
+  String render() => '$meaning⟨$surface⟩';
+}
+
+final class _ModifiedNode extends _MeaningNode {
+  const _ModifiedNode(this.base, this.modifiers);
+  final _MeaningNode base;
+  final List<_ModifierNode> modifiers;
+
+  @override
+  String render() {
+    final tail = modifiers.map((modifier) => modifier.render()).join(' ⊕ ');
+    return '${base.render()} ⊕ $tail';
+  }
+}
+
+final class _FusionNode extends _MeaningNode {
+  const _FusionNode(this.left, this.right);
+  final _MeaningNode left;
+  final _MeaningNode right;
+
+  @override
+  String render() => '${left.render()} ⊗ ${right.render()}';
+}
+
+final class _OpenRelationNode extends _MeaningNode {
+  const _OpenRelationNode(this.operator);
+  final String operator;
+
+  @override
+  String render() => operator;
+}
+
+final class _RelationNode extends _MeaningNode {
+  const _RelationNode(this.operator, this.object);
+  final String operator;
+  final _MeaningNode object;
+
+  @override
+  String render() => '$operator(${object.render()})';
+}
+
+final class _OpenUnaryNode extends _MeaningNode {
+  const _OpenUnaryNode(this.operator);
+  final String operator;
+
+  @override
+  String render() => operator;
+}
+
+final class _UnaryNode extends _MeaningNode {
+  const _UnaryNode(this.operator, this.operand);
+  final String operator;
+  final _MeaningNode operand;
+
+  @override
+  String render() => '$operator(${operand.render()})';
+}
+
+final class _OpenConnectorNode extends _MeaningNode {
+  const _OpenConnectorNode(this.operator, [this.left]);
+  final String operator;
+  final _MeaningNode? left;
+
+  @override
+  String render() => left == null ? operator : '$operator(${left!.render()})';
+}
+
+final class _ConnectorNode extends _MeaningNode {
+  const _ConnectorNode(this.operator, this.left, this.right);
+  final String operator;
+  final _MeaningNode? left;
+  final _MeaningNode right;
+
+  @override
+  String render() {
+    if (left == null) {
+      return '$operator(${right.render()})';
+    }
+    return '$operator(${left!.render()}, ${right.render()})';
+  }
+}
+
+final class _PunctuationNode extends _MeaningNode {
+  const _PunctuationNode({required this.symbol, required this.meaning});
+  final String symbol;
+  final String meaning;
+
+  @override
+  String render() => '$meaning⟨$symbol⟩';
+}
+
+final class _FillResult {
+  const _FillResult(this.node, this.didFill);
+  final _MeaningNode node;
+  final bool didFill;
 }

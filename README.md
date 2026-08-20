@@ -1,54 +1,56 @@
-# Drujba Semantică
+# Drujba Semantică — NO-LOSS
 
-Aplicație Android Flutter pentru OCR local și fuziune sintactico-lexicală
-deterministă. Textul camerei este citit pe dispozitiv, cuvânt cu cuvânt, și
-transformat într-un monolit semantic de forma:
+Aplicație Android Flutter offline pentru OCR local și sinteză semantică
+integrativă liniară. Motorul păstrează un singur obiect semantic în evoluție:
 
 ```text
-[Substanță-Substanță] ➔ [Dinamică] [atribut]
+S₀ = ∅
+Sₙ = F(Sₙ₋₁, Cₙ)
 ```
+
+Fiecare contribuție `Cₙ` este integrată strict în ordinea textului. Rezultatul
+afișat este sensul brut integrat al stării curente, nu un rezumat și nu o listă
+de cuvinte-cheie.
 
 Aplicația nu folosește LLM-uri, servicii cloud sau API-uri externe. APK-ul de
 release nu declară permisiunea Android `INTERNET`.
 
-## Funcții
+## Principii NO-LOSS
 
-- OCR continuu din fluxul camerei, prin modelul Latin ML Kit inclus local.
-- Stabilizare pe două cadre pentru a evita reintroducerea aceluiași text.
-- Procesare liniară și clasificare locală pe reguli fixe.
-- Categorii vizibile: Substanță `[Ce]`, Dinamică `➔`, Atribute `[Cum]`.
-- Zăvor/dezăvorâre prin atingerea unui concept.
-- Frecvențe păstrate determinist și ordine de inserție stabilă.
-- Intrare manuală offline, utilă când nu există cameră sau pentru verificare.
-- Resetarea completă a sesiunii.
+- Nu există stop-words: prepozițiile, conjuncțiile, articolele, pronumele,
+  negațiile, auxiliarele și cuantificatorii contribuie semantic.
+- Fiecare apariție este păstrată; conceptele nu sunt deduplicate.
+- Punctuația este tokenizată separat și integrată ca limită/forță semantică.
+- Formele funcționale stabile sunt reprezentate ca operatori relaționali,
+  unari sau de conectare.
+- Ambiguitatea reală nu este ghicită; alternativele rămân explicite.
+- Cuvintele din clase deschise rămân atomi lexicali dacă gramatica lor nu poate
+  fi stabilită sigur local. Motorul nu inventează definiții sau completări.
+- OCR-ul reconciliat pozițional poate reveni la `S_(k-1)` și relua calculul de
+  la primul token corectat, eliminând reziduul unei citiri OCR greșite.
 
 ## Utilizare
 
-1. Deschide aplicația și apasă **Scanează Pagina Liniar (OCR Continuous)**.
+1. Deschide aplicația și pornește scanarea OCR locală.
 2. Acordă permisiunea pentru cameră.
-3. Ține pagina lizibilă în cadru. Textul este confirmat după două cadre
-   consecutive stabile și absorbit în ordinea detectată.
-4. Atinge un concept pentru a-i comuta Zăvorul `LOCK`.
-5. Oprește scanarea sau resetează sesiunea din bara de sus.
-
-Panoul **Introducere manuală offline** permite testarea aceluiași motor fără
-cameră.
+3. Ține textul lizibil în cadru; un cadru este acceptat după stabilizare.
+4. Urmărește panoul **SENS BRUT INTEGRAT** și formula stării curente.
+5. Extinde **Trasare NO-LOSS** pentru a vedea contribuțiile `C₁...Cₙ`.
+6. Pentru text introdus manual, oprește scanarea și folosește panoul offline.
 
 ## Arhitectură
 
 ```text
-lib/core/                         motor pur, determinist și testabil
-lib/ocr/                          cameră + conversie cadre + OCR local
-lib/features/semantic_home_page.dart  interfața în timp real
-test/                             teste unitare și widget
-android/                          configurația APK Android
-.github/workflows/android.yml     analiză, teste și build release
+lib/core/romanian_rule_tagger.dart      analiză conservatoare a contribuțiilor
+lib/core/pure_semantic_fuzer.dart       starea unică Sₙ și operatorul F
+lib/core/ocr_frame_accumulator.dart     stabilizare + corecție pozițională OCR
+lib/ocr/                                cameră + OCR ML Kit local
+lib/features/semantic_home_page.dart    vizualizare sens brut în timp real
+test/                                   teste unitare și widget
+.github/workflows/android.yml            analiză, teste și build release
 ```
 
-Motorul păstrează fidel regulile din specificația PDF. Euristica gramaticală
-este intenționat rigidă: sufixele `re`/`a` indică verb, `ic`/`al` indică
-adjectiv, iar orice alt cuvânt util devine substantiv. Nu există inferență sau
-parafrazare.
+Contractul semantic detaliat este în [`SEMANTIC-SPEC.md`](SEMANTIC-SPEC.md).
 
 ## Compilare locală
 
@@ -57,7 +59,7 @@ Cerințe: Flutter 3.47.0, Dart 3.12+, JDK 17 și Android SDK 36.
 ```bash
 flutter pub get
 flutter analyze
-flutter test
+fluttter test
 flutter build apk --release
 ```
 
@@ -67,21 +69,15 @@ APK-ul rezultat este:
 build/app/outputs/flutter-apk/app-release.apk
 ```
 
-Pentru instalarea pe un dispozitiv conectat:
-
-```bash
-adb install -r build/app/outputs/flutter-apk/app-release.apk
-```
-
 ## Build automat pe GitHub
 
-Workflow-ul **Android APK** rulează formatarea, analiza statică, testele,
-compilarea release și o verificare a manifestului pentru a confirma că APK-ul
-nu are permisiunea `INTERNET`. APK-ul este publicat ca artifact al rulării.
+Workflow-ul Android CI rulează formatarea, analiza statică, testele, compilarea
+release și verificarea manifestului. APK-ul rezultat este publicat ca artifact
+al rulării.
 
 ## Confidențialitate
 
 - Sunt solicitate doar camera și capabilitatea hardware aferentă.
 - Cadrele sunt procesate în memorie pe dispozitiv.
 - Nu se păstrează fotografii și nu se trimit date în rețea.
-- Oprirea scanării eliberează camera imediat.
+- Oprirea scanării eliberează camera.

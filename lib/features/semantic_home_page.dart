@@ -24,7 +24,8 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
 
   late final LocalOcrScanner _scanner;
   bool _sessionStarted = false;
-  String _semanticStatus = 'Așteptare flux liniar';
+  String _semanticStatus = 'Așteptare sinteză liniară';
+  int _ocrBaseIndex = 0;
 
   @override
   void initState() {
@@ -54,27 +55,25 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
       return;
     }
 
-    if (update.newWords.isNotEmpty) {
-      _absorbWords(update.newWords);
+    if (update.isStable && update.hasChanges) {
+      _fuzer.reconcileTail(
+        baseIndex: _ocrBaseIndex,
+        tokens: update.stableTokens,
+        tagger: _tagger,
+      );
       setState(() {
         _sessionStarted = true;
         _semanticStatus =
-            '${update.newWords.length} cuvinte noi absorbite liniar';
+            'Sinteză reconciliată de la C${_ocrBaseIndex + update.changedFromIndex + 1}';
       });
       return;
     }
 
     setState(() {
       _semanticStatus = update.isStable
-          ? 'Cadru stabil - fără cuvinte noi'
+          ? 'Cadru stabil — sensul curent este neschimbat'
           : 'Stabilizez textul detectat...';
     });
-  }
-
-  void _absorbWords(Iterable<String> words) {
-    for (final word in words) {
-      _fuzer.absorbWord(word, _tagger.tagWord(word));
-    }
   }
 
   Future<void> _toggleScanning() async {
@@ -89,6 +88,7 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
     }
 
     _frameAccumulator.startNewStream();
+    _ocrBaseIndex = _fuzer.tokenCount;
     await _scanner.start();
   }
 
@@ -97,12 +97,14 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
     if (text.isEmpty) {
       return;
     }
-    final words = text.split(RegExp(r'\s+'));
-    _absorbWords(words);
+
+    final tokens = OcrFrameAccumulator.tokenizeText(text);
+    _fuzer.absorbTokens(tokens, _tagger);
+    _manualTextController.clear();
     FocusScope.of(context).unfocus();
     setState(() {
       _sessionStarted = true;
-      _semanticStatus = '${words.length} cuvinte procesate offline';
+      _semanticStatus = '${tokens.length} contribuții integrate fără pierdere';
     });
   }
 
@@ -111,31 +113,23 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
     _frameAccumulator.reset();
     _scanner.clearError();
     _manualTextController.clear();
+    _ocrBaseIndex = 0;
     setState(() {
       _sessionStarted = false;
-      _semanticStatus = 'Așteptare flux liniar';
-    });
-  }
-
-  void _toggleLock(SemanticElement element) {
-    final locked = _fuzer.toggleLock(element.value);
-    setState(() {
-      _semanticStatus = locked
-          ? '${element.value}: Zăvor aplicat'
-          : '${element.value}: Zăvor eliminat';
+      _semanticStatus = 'Așteptare sinteză liniară';
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final snapshot = _fuzer.snapshot;
-    final displayMonolith = _sessionStarted
-        ? snapshot.monolith
-        : '[Așteptare Flux Liniar...]';
+    final rawMeaning = _sessionStarted
+        ? snapshot.rawMeaning
+        : '∅  —  așteptare C₁';
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('DRU - Drujba Semantică v1.0'),
+        title: const Text('DRU — Sinteză Semantică NO-LOSS'),
         actions: <Widget>[
           IconButton(
             key: const Key('reset-session'),
@@ -150,11 +144,10 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
         child: Column(
           children: <Widget>[
             Expanded(
-              flex: 4,
-              child: _MonolithPanel(
-                monolith: displayMonolith,
+              flex: 5,
+              child: _SemanticStatePanel(
+                rawMeaning: rawMeaning,
                 snapshot: snapshot,
-                onElementPressed: _toggleLock,
               ),
             ),
             const Divider(height: 1),
@@ -185,23 +178,17 @@ final class _SemanticHomePageState extends State<SemanticHomePage>
   }
 }
 
-final class _MonolithPanel extends StatelessWidget {
-  const _MonolithPanel({
-    required this.monolith,
+final class _SemanticStatePanel extends StatelessWidget {
+  const _SemanticStatePanel({
+    required this.rawMeaning,
     required this.snapshot,
-    required this.onElementPressed,
   });
 
-  final String monolith;
+  final String rawMeaning;
   final SemanticSnapshot snapshot;
-  final ValueChanged<SemanticElement> onElementPressed;
 
   @override
   Widget build(BuildContext context) {
-    final hasElements = snapshot.substances.isNotEmpty ||
-        snapshot.dynamics.isNotEmpty ||
-        snapshot.attributes.isNotEmpty;
-
     return ColoredBox(
       color: Colors.black,
       child: LayoutBuilder(
@@ -211,105 +198,75 @@ final class _MonolithPanel extends StatelessWidget {
             constraints: BoxConstraints(minHeight: constraints.maxHeight - 32),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
+                Text(
+                  'SENS BRUT INTEGRAT',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: const Color(0xFF69F0AE),
+                        letterSpacing: 1.5,
+                      ),
+                ),
+                const SizedBox(height: 12),
                 Semantics(
-                  label: 'Monolit semantic curent',
+                  label: 'Sens semantic brut curent',
                   liveRegion: true,
                   child: SelectableText(
-                    monolith,
+                    rawMeaning,
                     key: const Key('semantic-monolith'),
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                       color: Color(0xFF69F0AE),
                       fontFamily: 'monospace',
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      height: 1.4,
+                      fontSize: 21,
+                      fontWeight: FontWeight.w700,
+                      height: 1.45,
                     ),
                   ),
                 ),
-                if (hasElements) ...<Widget>[
-                  const SizedBox(height: 22),
-                  _ElementGroup(
-                    label: 'Ce',
-                    color: const Color(0xFF69F0AE),
-                    elements: snapshot.substances,
-                    onPressed: onElementPressed,
+                const SizedBox(height: 16),
+                Text(
+                  snapshot.formalState,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xFF90CAF9),
+                    fontFamily: 'monospace',
                   ),
-                  _ElementGroup(
-                    label: 'Dinamică',
-                    color: const Color(0xFF64B5F6),
-                    elements: snapshot.dynamics,
-                    onPressed: onElementPressed,
-                  ),
-                  _ElementGroup(
-                    label: 'Cum',
-                    color: const Color(0xFFFFD54F),
-                    elements: snapshot.attributes,
-                    onPressed: onElementPressed,
+                ),
+                if (snapshot.contributions.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 18),
+                  ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    collapsedIconColor: Colors.grey,
+                    iconColor: Colors.grey,
+                    title: Text(
+                      'Trasare NO-LOSS · ${snapshot.tokenCount} contribuții',
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                    children: <Widget>[
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: <Widget>[
+                            for (final item in snapshot.contributions)
+                              Chip(
+                                label: Text(
+                                  'C${item.index} ${item.surface} → ${item.explicitMeaning}',
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ],
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-final class _ElementGroup extends StatelessWidget {
-  const _ElementGroup({
-    required this.label,
-    required this.color,
-    required this.elements,
-    required this.onPressed,
-  });
-
-  final String label;
-  final Color color;
-  final List<SemanticElement> elements;
-  final ValueChanged<SemanticElement> onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    if (elements.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Wrap(
-        alignment: WrapAlignment.center,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        spacing: 7,
-        runSpacing: 7,
-        children: <Widget>[
-          Text(
-            '$label:',
-            style: TextStyle(color: color, fontWeight: FontWeight.w700),
-          ),
-          for (final element in elements)
-            ActionChip(
-              tooltip: element.locked
-                  ? 'Elimină Zăvorul pentru ${element.value}'
-                  : 'Aplică Zăvorul pentru ${element.value}',
-              avatar: Icon(
-                element.locked ? Icons.lock : Icons.lock_open,
-                size: 16,
-                color: element.locked ? Colors.amber : color,
-              ),
-              label: Text(
-                element.frequency > 1
-                    ? '${element.value} ×${element.frequency}'
-                    : element.value,
-              ),
-              side: BorderSide(
-                color: element.locked ? Colors.amber : color.withAlpha(150),
-              ),
-              onPressed: () => onPressed(element),
-            ),
-        ],
       ),
     );
   }
@@ -370,7 +327,7 @@ final class _ControlPanel extends StatelessWidget {
             label: Text(
               scanner.isScanning
                   ? 'Oprește scanarea OCR locală'
-                  : 'Scanează Pagina Liniar (OCR Continuous)',
+                  : 'Scanează și sintetizează liniar',
             ),
           ),
           const SizedBox(height: 10),
@@ -402,13 +359,14 @@ final class _ControlPanel extends StatelessWidget {
               key: const Key('manual-input-section'),
               tilePadding: EdgeInsets.zero,
               title: const Text('Introducere manuală offline'),
-              subtitle: const Text('Folosește același motor, fără cameră'),
+              subtitle: const Text('Aceeași sinteză Sₙ = F(Sₙ₋₁, Cₙ)'),
               children: <Widget>[
                 TextField(
                   key: const Key('manual-input'),
                   controller: manualTextController,
+                  enabled: !scanner.isScanning,
                   minLines: 1,
-                  maxLines: 3,
+                  maxLines: 4,
                   textInputAction: TextInputAction.done,
                   onSubmitted: (_) => onProcessManualText(),
                   decoration: const InputDecoration(
@@ -420,20 +378,13 @@ final class _ControlPanel extends StatelessWidget {
                   width: double.infinity,
                   child: OutlinedButton.icon(
                     key: const Key('process-manual-input'),
-                    onPressed: onProcessManualText,
+                    onPressed: scanner.isScanning ? null : onProcessManualText,
                     icon: const Icon(Icons.account_tree_outlined),
-                    label: const Text('Procesează liniar'),
+                    label: const Text('Integrează fără rezumare'),
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            'Apasă scurt pe un concept pentru a aplica sau elimina Zăvorul '
-            '[LOCK 🔒].',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey),
           ),
         ],
       ),
