@@ -26,6 +26,7 @@ final class LocalOcrScanner extends ChangeNotifier {
   bool _processingFrame = false;
   bool _starting = false;
   bool _disposed = false;
+  int _consecutiveRejectedFrames = 0;
   String _status = 'OCR local pregătit';
   String? _error;
   String _lastRecognizedText = '';
@@ -45,6 +46,8 @@ final class LocalOcrScanner extends ChangeNotifier {
 
     _starting = true;
     _error = null;
+    _consecutiveRejectedFrames = 0;
+    _lastRecognizedText = '';
     _status = 'Pornesc camera locală...';
     _recognizer ??= TextRecognizer(script: TextRecognitionScript.latin);
     _notify();
@@ -126,20 +129,32 @@ final class LocalOcrScanner extends ChangeNotifier {
       return;
     }
 
-    final image = _adapter?.convert(frame);
-    if (image == null) {
-      return;
-    }
-
     _processingFrame = true;
     _lastAnalysis = now;
     try {
+      final image = _adapter?.convert(frame);
+      if (image == null) {
+        _consecutiveRejectedFrames += 1;
+        _status = 'Camera activă - verific formatul cadrului OCR';
+        if (_consecutiveRejectedFrames >= 8) {
+          _error = 'Camera livrează un format de imagine incompatibil cu OCR. '
+              'Oprește și repornește scanarea sau încearcă introducerea manuală.';
+        }
+        _notify();
+        return;
+      }
+
+      _consecutiveRejectedFrames = 0;
       final recognized = await _recognizer!.processImage(image);
       final text = recognized.text.trim();
       if (text.isNotEmpty && !_disposed && isScanning) {
+        _error = null;
         _lastRecognizedText = text;
         _status = 'OCR local: ${text.split(RegExp(r'\s+')).length} cuvinte detectate';
         onRecognizedFrame(text);
+        _notify();
+      } else if (!_disposed && isScanning) {
+        _status = 'Camera activă - apropie și focalizează textul';
         _notify();
       }
     } catch (exception) {
