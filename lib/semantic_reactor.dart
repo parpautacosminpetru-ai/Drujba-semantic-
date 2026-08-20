@@ -257,11 +257,11 @@ final class SemanticReactor {
     _root = _reducePair(root, atom).node;
   }
 
-  /// Reduces only exact rules on the newly formed right edge.
+  /// Integrates exactly one pair: the whole current concept and the next form.
   ///
-  /// A full current-state match wins first. If it is undefined, the reducer
-  /// tries the rightmost unresolved link. This lets a third form collapse an
-  /// earlier barrier without reordering or discarding the untouched prefix.
+  /// The reducer never skips the current root to fuse only an internal suffix.
+  /// Therefore every scan performs the same binary operation
+  /// `conceptCurent ⊗ formăNouă`, in strict arrival order.
   _Reduction _reducePair(_SemanticNode left, _SemanticNode right) {
     final axiom = _lookupAxiom(left.lookupKey, right.lookupKey);
     if (axiom != null) {
@@ -282,14 +282,6 @@ final class SemanticReactor {
         ),
       );
       return _Reduction(node: fused, changed: true);
-    }
-
-    if (left is _Linked) {
-      final suffix = _reducePair(left.right, right);
-      if (suffix.changed) {
-        final withPrefix = _reducePair(left.left, suffix.node);
-        return _Reduction(node: withPrefix.node, changed: true);
-      }
     }
 
     return _Reduction(
@@ -474,7 +466,7 @@ final class _Atom extends _SemanticNode {
   final List<String> unresolvedForms;
 }
 
-/// Ordered geometric connection retained when no exact rule is defined.
+/// One formal, ordered composite concept retained when no axiom is defined.
 final class _Linked extends _SemanticNode {
   _Linked({required this.left, required this.right})
       : rawSense = '${left.rawSense}-${right.rawSense}',

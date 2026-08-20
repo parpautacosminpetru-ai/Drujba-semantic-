@@ -11,6 +11,18 @@ SISTEM + POLITIC -> GUVERNANȚĂ
 GUVERNANȚĂ + EȘUAT -> ANOMIE
 ```
 
+Operația este strict binară la fiecare pas:
+
+```text
+cuvânt₁ ⊗ cuvânt₂ -> concept₁
+concept₁ ⊗ cuvânt₃ -> concept₂
+concept₂ ⊗ cuvânt₄ -> concept₃
+```
+
+Reducerul nu sare peste conceptul curent pentru a topi doar un sufix. Astfel,
+în orice moment există o singură rădăcină semantică activă și un singur monolit
+afișat.
+
 Arborele semantic păstrează toate formele originale ca proveniență și fiecare
 fuziune păstrează ID-ul axiomei folosite (`AX-002`, apoi `AX-003` în exemplu),
 chiar dacă interfața proiectează doar monolitul compact `[ANOMIE]`. O

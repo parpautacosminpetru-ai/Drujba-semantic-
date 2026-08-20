@@ -48,6 +48,29 @@ void main() {
       );
     });
 
+    test('folds one new form into exactly one current concept at every step', () {
+      final reactor = SemanticReactor();
+
+      reactor.integrateForm('Sistem');
+      expect(reactor.snapshot.display, '[SISTEM]');
+      expect(reactor.snapshot.sourceForms, <String>['Sistem']);
+
+      reactor.integrateForm('Politic');
+      expect(reactor.snapshot.display, '[GUVERNANȚĂ]');
+      expect(reactor.snapshot.fusionSteps.single.axiomId, 'AX-002');
+
+      reactor.integrateForm('Eșuat');
+      expect(reactor.snapshot.display, '[ANOMIE]');
+      expect(
+        reactor.snapshot.sourceForms,
+        <String>['Sistem', 'Politic', 'Eșuat'],
+      );
+      expect(
+        reactor.snapshot.fusionSteps.map((step) => step.axiomId),
+        <String>['AX-002', 'AX-003'],
+      );
+    });
+
     test('contains every exact directional rule from the PDF', () {
       final cases =
           <({String id, String left, String right, String result})>[
@@ -277,7 +300,7 @@ void main() {
       );
     });
 
-    test('right-edge collapse preserves prefix then permits cascade', () {
+    test('never bypasses the whole current concept to fold only a suffix', () {
       final reactor = SemanticReactor(
         fusionMatrix: const <String, Map<String, String>>{
           'beta': <String, String>{'gamma': 'BetaGamma'},
@@ -285,15 +308,9 @@ void main() {
         },
       )..integrateForms(<String>['Alpha', 'Beta', 'Gamma']);
 
-      expect(reactor.snapshot.rawSense, 'Tot');
-      expect(reactor.snapshot.fusionSteps, hasLength(2));
-      expect(reactor.snapshot.fusionSteps[0].result, 'BetaGamma');
-      expect(reactor.snapshot.fusionSteps[1].result, 'Tot');
-      expect(reactor.snapshot.fusionSteps[0].axiomId, 'matrix:beta+gamma');
-      expect(
-        reactor.snapshot.fusionSteps[1].axiomId,
-        'matrix:alpha+betagamma',
-      );
+      expect(reactor.snapshot.rawSense, 'Alpha-Beta-Gamma');
+      expect(reactor.snapshot.fusionSteps, isEmpty);
+      expect(reactor.snapshot.isAxiomaticallyResolved, isFalse);
       expect(
         reactor.snapshot.sourceForms,
         <String>['Alpha', 'Beta', 'Gamma'],
