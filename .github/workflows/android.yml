@@ -1,0 +1,98 @@
+name: Android CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-and-build:
+    name: Verify and build release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Flutter 3.47.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.0
+          channel: stable
+          cache: true
+
+      - name: Show toolchain versions
+        run: |
+          java -version
+          flutter --version
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      - name: Normalize formatting
+        run: dart format lib test
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test --reporter expanded
+
+      - name: Restore the Gradle wrapper JAR
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrapper_seed="$(mktemp -d)"
+          flutter create --platforms=android --project-name wrapper_seed --no-pub "$wrapper_seed/project"
+          cp "$wrapper_seed/project/android/gradle/wrapper/gradle-wrapper.jar" android/gradle/wrapper/gradle-wrapper.jar
+          test -s android/gradle/wrapper/gradle-wrapper.jar
+          chmod +x android/gradlew
+
+      - name: Build release APK
+        run: flutter build apk --release --no-pub
+
+      - name: Verify offline manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="build/app/outputs/flutter-apk/app-release.apk"
+          test -s "$apk"
+
+          analyzer="$(command -v apkanalyzer || true)"
+          if [[ -z "$analyzer" ]]; then
+            analyzer="$(find "${ANDROID_SDK_ROOT:?}/cmdline-tools" -type f -name apkanalyzer -print -quit)"
+          fi
+          test -x "$analyzer"
+
+          permissions="$("$analyzer" manifest permissions "$apk")"
+          if grep -Fq "android.permission.INTERNET" <<<"$permissions"; then
+            echo "::error::Release APK unexpectedly requests android.permission.INTERNET"
+            exit 1
+          fi
+          if ! grep -Fq "android.permission.CAMERA" <<<"$permissions"; then
+            echo "::error::Release APK is missing android.permission.CAMERA"
+            exit 1
+          fi
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-drujba-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
