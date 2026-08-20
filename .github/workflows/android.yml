@@ -44,6 +44,14 @@ jobs:
       - name: Install Dart dependencies
         run: flutter pub get
 
+      - name: Upload resolved dependency lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: semantic-drujba-pubspec-lock
+          path: pubspec.lock
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Normalize formatting
         run: dart format lib test
 
@@ -52,6 +60,17 @@ jobs:
 
       - name: Test
         run: flutter test --reporter expanded
+
+      - name: Verify bundled cinematic scenes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asset in assets/cinema/scenes/*.webp; do
+            test -s "$asset"
+            test "$(head -c 4 "$asset")" = "RIFF"
+            test "$(dd if="$asset" bs=1 skip=8 count=4 status=none)" = "WEBP"
+          done
+          test "$(find assets/cinema/scenes -maxdepth 1 -type f -name '*.webp' | wc -l)" -eq 4
 
       - name: Restore the Gradle wrapper JAR
         shell: bash

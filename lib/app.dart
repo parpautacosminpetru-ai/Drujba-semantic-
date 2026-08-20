@@ -16,7 +16,7 @@ final class DrujbaSemanticaApp extends StatelessWidget {
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Drujba Semantică',
+      title: 'Drujba Semantică v2.0',
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
